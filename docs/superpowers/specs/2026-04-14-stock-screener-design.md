@@ -301,7 +301,7 @@ A-share and HK stocks have many name collisions (abbreviations, group vs subsidi
 
 **News quality controls:**
 - **Duplicate headline collapsing:** Before counting mentions or scoring sentiment, deduplicate headlines by Jaccard similarity > 0.7 (same approach as global-news). Multiple outlets running the same wire story count as 1 mention, not N.
-- **Company-specific vs macro/sector:** LLM sentiment prompt includes instruction to return `"scope": "company" | "sector" | "macro"`. Only `company`-scoped headlines contribute to the stock's sentiment score. `sector` and `macro` headlines are logged for context in the LLM report but do not inflate the stock-level sentiment factor.
+- **Company-specific vs macro/sector:** LLM sentiment prompt includes instruction to return `"scope": "company" | "sector" | "macro"`. Only `company`-scoped headlines contribute to the stock's sentiment score. `sector` and `macro` headlines are logged for context in the LLM report but do not inflate the stock-level sentiment factor. **Post-MVP consideration:** add a `regulatory` scope for policy/regulatory news, which has outsized impact on HK-listed China tech, A-share education/healthcare, and similar policy-sensitive sectors.
 - **Source quality weighting:** Not in MVP (all sources equal weight). Reserve for post-MVP if large-cap coverage bias proves problematic.
 
 **News sources:**
@@ -567,6 +567,8 @@ When the same stock appears in multiple runs whose 10-day evaluation windows ove
 
 **Cooldown rule:** After an event-driven run, no new event-driven run for the same trigger type within 5 trading days. Multiple different triggers on the same day are consolidated into a single event run (combined run_id: `{YYYY-MM-DD}-event-combined`).
 
+**Implementation note:** The 5-day cooldown is an initial setting. A-share and HK event propagation rhythms differ — monitor forward tracking data to determine if this suppresses valid secondary signals. Adjust per-market if needed.
+
 ---
 
 ## Section 5: MVP Scope & Milestones
@@ -635,6 +637,8 @@ Backtesting is only valid if each simulated screening run uses ONLY data that wa
 | **Universe constituents** | Use the constituent list that was in effect at the simulated date, not the current list. | Monthly constituent snapshots (see Universe Definition). |
 
 **News in backtest — deliberate degradation:** LLM sentiment scoring is skipped in backtest mode because (a) LLM behavior is non-deterministic and may reflect training data from after the simulated date, and (b) historical headline archives may be incomplete. Instead, backtest uses a simple keyword-based sentiment proxy (+1/-1/0 from word lists). This means backtest results will understate the news dimension's contribution — which is acceptable as a conservative lower bound.
+
+**Important implication:** The news factor in backtest and the news factor in live mode are NOT the same model (keyword proxy vs LLM). Therefore, backtest conclusions about the news dimension are directional only — do not interpret precise news-factor contribution numbers from backtest as predictive of live performance.
 
 **Fundamentals snapshot collection:** The backtest engine requires a historical fundamentals store. For MVP, this is populated by:
 1. Fetching current and last-4-quarters financials from East Money API (which provides historical report data)
