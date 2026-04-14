@@ -36,7 +36,7 @@ Layered funnel + dual trigger mode. Each layer reduces the candidate set while i
 | Weekly | cron (weekend) | 1x/week | `default_weekly` |
 | Event-driven | Machine-determined conditions (see Section 4) | Variable | `event_driven` |
 
-Both modes share the same Layer 1-3 pipeline; only Layer 2 factor weights differ.
+Both modes share Layer 2-3 pipeline. Layer 1 uses mode-specific gate sets (see Section 2).
 
 ### Project Structure
 
@@ -121,7 +121,9 @@ If both repos mature, consider extracting a shared data package later.
 
 Purpose: reduce ~800 to ~200-400. Pure rules, zero LLM calls. Only tradability, liquidity, and extreme risk exclusion.
 
-**Hard gates (AND logic, all must pass):**
+Layer 1 has two gate sets: one for weekly mode and one for event-driven mode. This is necessary because weekly gates (MA20 trend, price > MA20) would filter out oversold rebound candidates that are the entire point of event-driven screening.
+
+**Weekly mode gates (AND logic, all must pass):**
 
 | Condition | A-share Threshold | HK Threshold | Source |
 |-----------|-------------------|--------------|--------|
@@ -130,9 +132,20 @@ Purpose: reduce ~800 to ~200-400. Pure rules, zero LLM calls. Only tradability, 
 | 60-day volatility cap | Annualized vol < 80% (exclude extreme movers) | < 100% | Kline calc |
 | Volume not collapsing | 5-day avg volume > 20-day avg volume x 0.6 | Same | Kline calc |
 
+**Event-driven mode gates (relaxed trend requirements):**
+
+| Condition | A-share Threshold | HK Threshold | Source |
+|-----------|-------------------|--------------|--------|
+| 60-day volatility cap | Annualized vol < 100% (wider tolerance) | < 120% | Kline calc |
+| Volume not collapsing | 5-day avg volume > 20-day avg volume x 0.4 | Same | Kline calc |
+| Not in freefall | Close > MA60 (still above long-term trend) | Same | Kline calc |
+| Minimum liquidity | 20-day avg daily turnover > CNY 30M / HKD 15M | Same | Quote API |
+
+Event mode drops MA20 slope and price-above-MA20 gates, replacing them with a looser MA60 floor. This allows stocks that have pulled back sharply but retain long-term structural support.
+
 All thresholds are configurable in `config/factors.json`, not hardcoded.
 
-**Explicitly NOT hard gates (moved to Layer 2 scoring):**
+**Explicitly NOT hard gates in either mode (moved to Layer 2 scoring):**
 - RSI range — strong trend stocks often have persistently high RSI
 - PE(TTM) > 0 — growth stocks, cyclicals, and some HK companies distort this metric
 - Earnings growth — too noisy for binary filtering
@@ -171,7 +184,7 @@ The +/-1% threshold is an initial hyperparameter (configurable in `screener.json
 **MVP evaluation metrics (primary):**
 - Win rate (WIN / total)
 - Average excess return (mean alpha across all recommendations)
-- Max drawdown (worst single-period portfolio return)
+- Max drawdown (peak-to-trough decline on the cumulative equity curve, NOT worst single-period return)
 - Information ratio (mean alpha / std alpha)
 
 Statistical significance testing (t-test etc.) is deferred until 30+ periods accumulate. Before that, only descriptive metrics.
@@ -286,6 +299,11 @@ Whitelist-based matching to control noise:
 
 A-share and HK stocks have many name collisions (abbreviations, group vs subsidiary). Low-confidence matches are recorded for context but do not contribute to the sentiment score.
 
+**News quality controls:**
+- **Duplicate headline collapsing:** Before counting mentions or scoring sentiment, deduplicate headlines by Jaccard similarity > 0.7 (same approach as global-news). Multiple outlets running the same wire story count as 1 mention, not N.
+- **Company-specific vs macro/sector:** LLM sentiment prompt includes instruction to return `"scope": "company" | "sector" | "macro"`. Only `company`-scoped headlines contribute to the stock's sentiment score. `sector` and `macro` headlines are logged for context in the LLM report but do not inflate the stock-level sentiment factor.
+- **Source quality weighting:** Not in MVP (all sources equal weight). Reserve for post-MVP if large-cap coverage bias proves problematic.
+
 **News sources:**
 - A-share: CLS / Jin10 / Yicai (via rsshub.rssforever.com)
 - HK: MarketWatch / CNBC / East Money HK channel
@@ -293,13 +311,14 @@ A-share and HK stocks have many name collisions (abbreviations, group vs subsidi
 **LLM sentiment prompt (GPT-4.1-mini, batch):**
 
 ```
-Given these news headlines about {stock_name}, judge each headline's impact:
--1 = clearly negative, 0 = neutral/irrelevant, 1 = clearly positive
+Given these news headlines about {stock_name}, judge each headline's impact and scope:
+sentiment: -1 = clearly negative, 0 = neutral/irrelevant, 1 = clearly positive
+scope: "company" = specifically about this company, "sector" = about its industry/sector, "macro" = macro/policy news
 
 Headlines:
 {titles}
 
-Return JSON: [{"title": "...", "sentiment": -1|0|1}]
+Return JSON: [{"title": "...", "sentiment": -1|0|1, "scope": "company"|"sector"|"macro"}]
 ```
 
 Batch 10-20 headlines per call. ~200-400 stocks x ~3-5 headlines avg = ~1000 headlines, ~50-100 API calls. Estimated cost: $0.01-0.02 per screening run.
@@ -398,9 +417,9 @@ Return JSON format.
 | Index crash | CSI 300 or HSI daily drop > 3% | Daily post-close | Quote API |
 | Volume surge | Index turnover > 20d avg x 1.5 | Daily post-close | Quote API |
 | VIX spike | VHSI > 30 | Daily post-close | Quote API |
-| Earnings season | Current date in earnings window (Apr/Aug/Oct) | Config calendar | `screener.json` |
+| Earnings dense week | Number of index constituents with earnings release in past 5 trading days > 30 | Earnings calendar API or config | `screener.json` |
 
-Any single condition triggers event screening.
+Any single condition triggers event screening. Note: earnings season is defined by actual disclosure density, not calendar month. A whole-month trigger (Apr/Aug/Oct) would fire too frequently and degrade event mode into a noisy alternate weekly scan.
 
 **Stock/sector triggers (bonus signals within Layer 2 scoring):**
 
@@ -533,6 +552,21 @@ MIME-Version: 1.0 header. `html.escape()` on all external text.
 
 All tables keyed by `run_id` to distinguish weekly vs event-driven runs within the same week.
 
+### Overlapping Run Deduplication
+
+When the same stock appears in multiple runs whose 10-day evaluation windows overlap (e.g., weekly run on Monday + event-driven run on Wednesday of the same week), the following rules apply:
+
+**For forward tracking evaluation:**
+- Each run is evaluated independently (both get outcome records)
+- But for aggregate statistics (win rate, avg alpha, info ratio), a stock-week pair is counted **only once**, using the earliest run's entry price as the reference
+- The `run_summary` table includes a `deduped_count` field showing how many unique stock-week pairs were evaluated vs raw count
+
+**For backtest:**
+- Same dedup rule: if the same stock would be selected by both weekly and event-driven backtests in overlapping windows, count it once
+- Backtest report explicitly shows raw vs deduped sample sizes
+
+**Cooldown rule:** After an event-driven run, no new event-driven run for the same trigger type within 5 trading days. Multiple different triggers on the same day are consolidated into a single event run (combined run_id: `{YYYY-MM-DD}-event-combined`).
+
 ---
 
 ## Section 5: MVP Scope & Milestones
@@ -589,14 +623,32 @@ All tables keyed by `run_id` to distinguish weekly vs event-driven runs within t
 
 **Goal:** Run pipeline against historical data, verify it's not absurd.
 
-**Phase 1 (3 months):** Verify pipeline runs end-to-end on historical data, produces outputs, no crashes.
+**Point-in-time data integrity (critical):**
+
+Backtesting is only valid if each simulated screening run uses ONLY data that was available at the simulated date. Using future-known data (look-ahead bias) invalidates all results. The following rules are mandatory:
+
+| Data Type | Point-in-Time Rule | Implementation |
+|-----------|-------------------|----------------|
+| **Fundamentals (ROE, growth, margin)** | Use only the most recent **published** financial report as of the simulated date. A-share quarterly reports have mandatory disclosure deadlines: Q1 by Apr 30, H1 by Aug 31, Q3 by Oct 31, Annual by Apr 30. Apply a **publication lag buffer of +45 days** from period end to be conservative (e.g., a screen on Jan 15 can only use data from Q3 ending Sep 30, not Q4). | Store historical fundamentals snapshots keyed by `(stock, report_period, disclosure_date)`. Backtest engine queries `WHERE disclosure_date <= simulated_date`. |
+| **Klines / Quotes** | Use only data up to the simulated date. No peeking at future prices. | Standard: fetch klines with `end_date = simulated_date`. |
+| **News headlines** | Use only headlines published before the simulated date. | Archive headlines with publication timestamps. Backtest queries `WHERE pub_date <= simulated_date`. LLM sentiment is NOT re-run in backtest — instead, use a simplified keyword-based proxy (positive/negative word lists) to avoid anachronistic LLM behavior. |
+| **Universe constituents** | Use the constituent list that was in effect at the simulated date, not the current list. | Monthly constituent snapshots (see Universe Definition). |
+
+**News in backtest — deliberate degradation:** LLM sentiment scoring is skipped in backtest mode because (a) LLM behavior is non-deterministic and may reflect training data from after the simulated date, and (b) historical headline archives may be incomplete. Instead, backtest uses a simple keyword-based sentiment proxy (+1/-1/0 from word lists). This means backtest results will understate the news dimension's contribution — which is acceptable as a conservative lower bound.
+
+**Fundamentals snapshot collection:** The backtest engine requires a historical fundamentals store. For MVP, this is populated by:
+1. Fetching current and last-4-quarters financials from East Money API (which provides historical report data)
+2. Storing as `data/fundamentals_history/{stock_code}.json` with `report_period` and `disclosure_date` fields
+3. For data before the tool existed: akshare `stock_financial_report_sina()` or similar as a one-time backfill
+
+**Phase 1 (3 months):** Verify pipeline runs end-to-end on historical data with point-in-time constraints, produces outputs, no crashes. Verify that the fundamentals used in each simulated period are from the correct reporting quarter.
 
 **Phase 2 (6-12 months):** Initial judgment on signal quality. Compare against:
 - Random baseline: equal-weight random 20 from universe
 - Simple-rule baseline 1: top 20 by 10-day relative strength only
 - Simple-rule baseline 2: top 20 by ROE only
 
-**Pass criteria:** Pipeline functional (Phase 1). Multi-factor model not worse than simple baselines on 6+ month data (Phase 2).
+**Pass criteria:** Pipeline functional with correct point-in-time data (Phase 1). Multi-factor model not worse than simple baselines on 6+ month data (Phase 2).
 
 #### M3: Layer 3 + Email
 
@@ -635,11 +687,21 @@ All tables keyed by `run_id` to distinguish weekly vs event-driven runs within t
 ```json
 {
   "layer1": {
-    "ma20_slope_positive": true,
-    "price_above_ma20": true,
-    "volatility_cap_a": 0.80,
-    "volatility_cap_hk": 1.00,
-    "volume_ratio_min": 0.6
+    "weekly": {
+      "ma20_slope_positive": true,
+      "price_above_ma20": true,
+      "volatility_cap_a": 0.80,
+      "volatility_cap_hk": 1.00,
+      "volume_ratio_min": 0.6
+    },
+    "event_driven": {
+      "close_above_ma60": true,
+      "volatility_cap_a": 1.00,
+      "volatility_cap_hk": 1.20,
+      "volume_ratio_min": 0.4,
+      "min_turnover_a": 30000000,
+      "min_turnover_hk": 15000000
+    }
   },
   "layer2": {
     "standardization": {
@@ -675,7 +737,7 @@ All tables keyed by `run_id` to distinguish weekly vs event-driven runs within t
     "index_drop_pct": 0.03,
     "volume_surge_ratio": 1.5,
     "vhsi_threshold": 30,
-    "earnings_months": [4, 8, 10]
+    "earnings_dense_week_threshold": 30
   },
   "event_bonuses": {
     "individual_volume_spike": {"ratio": 2.0, "bonus": 10},
@@ -717,6 +779,7 @@ All tables keyed by `run_id` to distinguish weekly vs event-driven runs within t
 | Event (index drop) | `{YYYY-MM-DD}-event-{index}-drop` | `2026-04-18-event-csi300-drop` |
 | Event (volume surge) | `{YYYY-MM-DD}-event-volume-surge` | `2026-04-18-event-volume-surge` |
 | Event (VIX spike) | `{YYYY-MM-DD}-event-vhsi-spike` | `2026-04-18-event-vhsi-spike` |
-| Event (earnings season) | `{YYYY-MM-DD}-event-earnings` | `2026-04-18-event-earnings` |
+| Event (earnings dense week) | `{YYYY-MM-DD}-event-earnings-dense` | `2026-04-18-event-earnings-dense` |
+| Event (combined, same day) | `{YYYY-MM-DD}-event-combined` | `2026-04-18-event-combined` |
 
-If multiple events trigger on the same day, each gets its own run.
+If multiple triggers fire on the same day, they are consolidated into a single combined run (not separate runs per trigger). Cooldown: no repeat event run for the same trigger type within 5 trading days.
