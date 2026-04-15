@@ -1,5 +1,7 @@
 # Phase 0: Data Infrastructure Validation — Implementation Plan
 
+> **SUPERSEDED** by `2026-04-15-phase0-data-spike.md`. Original plan was too production-heavy for a data spike. Kept for reference.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Validate that ~900 A-share + HK stock universe collection, OHLCV history, and fundamental data fetching work reliably at scale — answering "is our data pipeline real?" before any screening logic.
