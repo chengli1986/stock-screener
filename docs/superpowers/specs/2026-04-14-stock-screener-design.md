@@ -113,6 +113,11 @@ If both repos mature, consider extracting a shared data package later.
   - Suspended > 5 trading days
 - Dedup: stocks appearing in both indices are kept once
 
+**ChiNext (创业板) scope decision:**
+- CSI 300 + CSI 500 already cover ChiNext core names (large-cap, high-liquidity growth stocks)
+- MVP does NOT include full ChiNext market separately — avoids universe bloat, data noise, and unclear strategy targets
+- Post-MVP expansion path: Phase 1 evaluate ChiNext 50 (创业板50) → then CSI 1000 → full ChiNext is not recommended
+
 **Expected scale:** ~700-800 stocks after exclusions enter Layer 1.
 
 **Constituent update:** Monthly cron on the 1st, diff logged. For backtesting, historical constituent snapshots are stored monthly to prevent survivorship bias (see Section 5).
