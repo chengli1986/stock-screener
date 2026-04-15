@@ -73,6 +73,31 @@ Every fetch result gets one of:
 
 No mock tests. The whole point is testing real API behavior.
 
+### Guardrails
+
+**1. HK JSON is provisional.** Constituent codes are initial seeds, not verified against official HSI/HSCEI quarterly announcements. Config must include:
+```json
+{
+  "source_status": "provisional",
+  "last_verified": null,
+  "source_note": "Initial seed list; verify against official HSI/HSCEI constituent announcements before production use."
+}
+```
+Coverage report must state this clearly.
+
+**2. Dry run uses fixed samples, not random.** The 15-stock dry run must be deterministic and reproducible:
+- A-share 10: cover SSE + SZSE + ChiNext, sectors = financials, consumer, tech, manufacturing
+- HK 5: 00700 腾讯, 00005 汇丰, 00941 中移动, 09988 阿里, 03690 美团
+
+**3. Phase 0 = facts only.** The script reports what it sees. It does NOT:
+- Fill missing HK fields
+- Derive growth rates
+- Adjust weights
+- Apply Layer 1 filters
+- Score or recommend anything
+
+Those belong to Phase 1.
+
 ### Config dependency
 
-`config/hk_constituents.json` — static HSI + HSCEI members with codes + Chinese names. Seeded by `scripts/seed_hk_constituents.py`, maintained manually each quarter.
+`config/hk_constituents.json` — provisional HSI + HSCEI members with codes + Chinese names. Seeded by `scripts/seed_hk_constituents.py`, maintained manually each quarter. Must be verified against official announcements before Phase 1.
