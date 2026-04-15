@@ -101,7 +101,7 @@ If both repos mature, consider extracting a shared data package later.
 - Exclusions:
   - ST / *ST / delisting transition stocks (name contains ST marker)
   - Suspended > 5 trading days (last trade date > 5 days ago)
-  - 20-day average daily turnover < CNY 50M
+  - 20-day average daily turnover < CNY 30M
   - Listed < 60 trading days (new IPO data instability)
 - Dedup: stocks appearing in both CSI 300 and CSI 500 are kept once
 
