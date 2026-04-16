@@ -1,6 +1,18 @@
 # Phase 0: Data Infrastructure Validation — Implementation Plan
 
-> **SUPERSEDED** by `2026-04-15-phase0-data-spike.md`. Original plan was too production-heavy for a data spike. Kept for reference.
+> ⚠️ **SUPERSEDED — DO NOT USE FOR IMPLEMENTATION**
+>
+> Superseded by [`2026-04-15-phase0-data-spike.md`](2026-04-15-phase0-data-spike.md) (Phase 0 data spike plan v3). **Implementation MUST follow the spike plan's §A–§I frozen interfaces.**
+>
+> The file structure, schemas, test shapes, and output paths below are **obsolete** and directly conflict with the current plan:
+>
+> - ❌ Old: nested `config/hk_constituents.json` with `indices[].members[]` shape → ✅ v3 uses **flat 8-field records per §A** (`market`, `symbol_raw`, `symbol_norm`, `name`, `universe_source`, `source_status`, `last_verified`, `source_note`).
+> - ❌ Old: `data/universe.py` / `data/fetch.py` / `data/report.py` package layout → ✅ v3 uses **single `scripts/phase0_spike.py`**.
+> - ❌ Old: `tests/test_universe.py` with mocked APIs → ✅ v3 tests are **minimal real-API smoke tests** (see spike plan "Tests" section; no mocks).
+> - ❌ Old: `output/` directory → ✅ v3 uses **`artifacts/phase0/`** (production `data/` is reserved for Phase 1+).
+> - ❌ Old: fundamentals field names unspecified → ✅ v3 freezes **exactly 8 fundamentals fields in canonical order per §I**.
+>
+> Retained solely for historical reference to the original production-layer design. **Do not copy any code, schema, file path, or test shape from below.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

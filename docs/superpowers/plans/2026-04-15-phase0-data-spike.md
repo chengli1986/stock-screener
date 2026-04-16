@@ -135,7 +135,35 @@ Before any code is written, these interfaces are frozen. Changing them later = r
 
 **`last_verified` type** (per §A): ISO 8601 string, or `null` for unverified HK seed rows. Never a status enum — if audit-state is needed, add a separate `audit_status` field.
 
+**Fundamentals field set** (per §I): 8 fields in fixed canonical order — `roe_ttm`, `revenue_growth`, `net_profit_growth`, `net_margin_ttm`, `gross_margin`, `pe_ttm`, `pb`, `market_cap`. HK default `missing_expected` set = `{revenue_growth, net_margin_ttm, gross_margin}`; updated from dry run if actual result disagrees.
+
 **Dry-run exit criteria** (per §C): failures classifiable, reproducible, recoverable — NOT "all green".
+
+### §I Fundamentals field set (frozen for Phase 0)
+
+Phase 0 captures exactly these 8 fundamentals fields per stock, in this **fixed canonical order** — used verbatim by `fundamentals.jsonl`, `report.json`, `coverage_report.md`, and test assertions. **Do not reorder.**
+
+| # | Field | Role | Source | A-share expectation | HK expectation |
+|---|-------|------|--------|---------------------|----------------|
+| 1 | `roe_ttm` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `available` |
+| 2 | `revenue_growth` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `missing_expected` |
+| 3 | `net_profit_growth` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `available` |
+| 4 | `net_margin_ttm` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `missing_expected` |
+| 5 | `gross_margin` | Reserve / audit | East Money push2 | `available` | `missing_expected` |
+| 6 | `pe_ttm` | Reserve (excluded from core scoring per spec; still measured to support guard rules like `PE > 0`) | East Money push2 | `available` | `available` |
+| 7 | `pb` | Reserve | East Money push2 | `available` | `available` |
+| 8 | `market_cap` | Reserve / universe scale reporting | East Money push2 | `available` | `available` |
+
+Field names are lowercase_snake_case canonical keys; the fetcher translates East Money raw field names into these keys.
+
+**Default `missing_expected` set for HK is exactly `{revenue_growth, net_margin_ttm, gross_margin}`.** This is the pre-run baseline used by the classifier, coverage report, and tests.
+
+**Update rule (NOT "whichever feels right"):**
+- If the 15-stock dry run confirms this set — no change.
+- If the dry run disagrees for any HK field (e.g. `gross_margin` unexpectedly returns values, or `roe_ttm` is actually empty), the classifier rules AND this §I table are updated **from the dry run result**, not from the pre-run assumption. Plan doc and code must be amended in the same commit before proceeding to `--limit 70`.
+- Implementation MUST NOT silently diverge from this table: either the table matches reality, or the commit that breaks the match also updates the table.
+
+Adding or removing a field from this list is an interface change → requires another freeze round.
 
 ## One script: `scripts/phase0_spike.py`
 
@@ -216,7 +244,10 @@ No mock tests. The whole point is testing real API behavior.
 Coverage report must state this clearly.
 
 **2. Dry run uses fixed samples, not random.** The 15-stock dry run must be deterministic and reproducible:
-- A-share 10: cover SSE + SZSE + ChiNext, sectors = financials, consumer, tech, manufacturing. **ChiNext samples must themselves be current CSI 500 constituents** (see §G — ChiNext enters the universe through CSI 500, not as a separate source).
+- A-share 10 (frozen tickers, verified 2026-04-16 against live CSI 300 / CSI 500 membership via `ak.index_stock_cons_csindex`):
+  - **SSE (5):** `600519.SH` 贵州茅台 (consumer), `600036.SH` 招商银行 (financials), `601318.SH` 中国平安 (financials), `600276.SH` 恒瑞医药 (healthcare), `600900.SH` 长江电力 (utilities)
+  - **SZSE main-board (3):** `000333.SZ` 美的集团 (consumer/manufacturing), `000858.SZ` 五粮液 (consumer), `000651.SZ` 格力电器 (consumer/manufacturing)
+  - **ChiNext (2)**, both verified as current CSI 500 constituents per §G: `300454.SZ` 深信服 (tech), `300450.SZ` 先导智能 (manufacturing)
 - HK 5: `0700.HK` 腾讯, `0005.HK` 汇丰, `0941.HK` 中移动, `9988.HK` 阿里, `3690.HK` 美团 (normalized per §A)
 
 **3. Phase 0 = facts only.** The script reports what it sees. It does NOT:
