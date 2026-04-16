@@ -16,7 +16,7 @@ After external review, these constraints are locked before any code is written. 
 
 ### §A Unified security schema (most important)
 
-Every stock carries this record across all phases — this is the join key between OHLCV, fundamentals, and the final report.
+Every stock carries this 8-field record across all phases — this is the join key between OHLCV, fundamentals, and the final report. **All 8 fields are present on every row**, A-share and HK alike; no market-specific columns.
 
 | Field | Type | A-share example | HK example |
 |-------|------|-----------------|------------|
@@ -25,27 +25,33 @@ Every stock carries this record across all phases — this is the join key betwe
 | `symbol_norm` | canonical form (join key) | `600519.SH` | `0700.HK` |
 | `name` | Chinese name | `贵州茅台` | `腾讯控股` |
 | `universe_source` | which list brought it in | `csi300` / `csi500` | `hk_seed_hsi` / `hk_seed_hscei` |
+| `source_status` | provenance state (NOT market-specific) | `live` | `provisional` |
+| `last_verified` | when this record's source was last confirmed | runtime timestamp of akshare call | date from HK seed file |
+| `source_note` | short provenance note | `akshare index_stock_cons_csindex runtime snapshot` | `manual HSI/HSCEI provisional seed` |
 
 Normalization rules:
 - A-share: `{6-digit code}.{SH|SZ}` — SSE codes (6xx) → `.SH`; SZSE codes (0xx / 3xx) → `.SZ`
 - HK: `{4-digit zero-padded}.HK` (e.g. `0700.HK`, never `700.HK`, never `00700`)
 
-`universe.jsonl` is the authoritative source of `symbol_norm`. OHLCV + fundamentals fetchers accept `symbol_norm` and internally adapt to whatever their upstream API expects.
+Provenance fields (`source_status` / `last_verified` / `source_note`) are **universe provenance, not market-specific**: every row has them, populated with live metadata for A-share (runtime snapshot from akshare) and seed metadata for HK (from `hk_constituents.json`).
 
-### §B Fundamentals as tri-state (not binary)
+**Warning — `last_verified` ≠ "manually audited".** For A-share rows it is simply the wall-clock time the upstream API was called during this run. For HK rows it is the date someone last reconciled the seed file against official HSI/HSCEI announcements. Do not conflate the two in downstream reports.
 
-Split the single status field into two:
+`universe.csv` is the authoritative source of `symbol_norm`. OHLCV + fundamentals fetchers accept `symbol_norm` and internally adapt to whatever their upstream API expects.
 
-| Field | Values | Meaning |
-|-------|--------|---------|
-| `fetch_status` | `ok` / `fetch_error` | Was the API call itself successful? |
-| `field_status` (per field) | `available` / `missing_expected` / `missing_unexpected` | Is each field present, known-missing, or unexpectedly gone? |
+### §B Fundamentals as single-axis tri-state
 
-`missing_expected` covers known HK gaps (`revenue_growth`, `gross_margin`, `net_margin` per Phase 0 API testing). These are NOT counted as errors.
+Each fundamentals field carries exactly one of three states:
 
-`missing_unexpected` = the field should exist (e.g. A-share PE) but is absent. This IS a flag.
+| `field_status` | Meaning |
+|----------------|---------|
+| `available` | Value retrieved successfully |
+| `missing_expected` | Field is known to be unavailable for this market (e.g. HK `revenue_growth` / `gross_margin` / `net_margin` per Phase 0 API testing) — NOT counted as an error |
+| `fetch_error` | API call failed, OR field returned null/empty when it should have had a value |
 
-Rationale: fundamentals coverage is inherently uneven, especially HK. Treating "HK `revenue_growth` missing" as a failure would drown real problems.
+When the entire API call fails for a record, all fields on that record are marked `fetch_error` uniformly.
+
+Rationale: fundamentals coverage is inherently uneven, especially HK. Treating "HK `revenue_growth` missing" as a failure would drown real problems. Phase 0 deliberately does NOT split `fetch_error` into "API 500" vs "unexpected null" sub-categories — both are `fetch_error`, triaged later via `error_msg` if the counts warrant it.
 
 ### §C Dry-run exit criteria (not "looks pretty")
 
@@ -84,17 +90,41 @@ Do NOT skip a whole phase just because the file is non-empty — a mid-phase cra
 All Phase 0 outputs go under `artifacts/phase0/`, not `data/phase0/`. `data/` is reserved for production-grade outputs from Phase 1+.
 
 File formats:
-- `universe.jsonl`, `fundamentals.jsonl` — nested fields + tri-state status → JSONL
-- `ohlcv.csv`, `timing.csv` — flat summary rows → CSV
+- `universe.csv`, `ohlcv.csv`, `timing.csv` — flat uniform-schema rows → CSV
+- `fundamentals.jsonl` — nested per-field `field_status` + value → JSONL
 - `report.json` + `coverage_report.md` — both kept; json is machine-read, md is human-read
 
 ### §G ChiNext scope clarification
+
+**Invariant (use this line verbatim in spec, code comments, and docs):**
+
+> Phase 0 universe uses CSI 300 + CSI 500; GEM/ChiNext names may appear only insofar as they are constituents of those indices, not as a separately sourced universe.
 
 - **MVP universe source = CSI 300 + CSI 500 only.**
 - CSI 500's construction rule already includes ChiNext stocks (e.g. `300750.SZ` 宁德时代 is a CSI 500 constituent). ChiNext stocks enter the universe *through CSI 500 membership*, not as a separate source.
 - "MVP does not include ChiNext" means: we do NOT add `chinext50` or `chinext_all` as a separate `universe_source`. We do NOT widen the pool.
 - The dry-run fixed sample may include a ChiNext stock **only if it is a current CSI 500 constituent**.
 - Post-MVP `chinext50` / `csi1000` inclusion is a scope decision, not a data fix.
+
+### §H Frozen interfaces (v3, implementation-ready)
+
+Before any code is written, these interfaces are frozen. Changing them later = rework.
+
+**`config/hk_constituents.json`** — every record has these 8 fields (per §A):
+`market`, `symbol_raw`, `symbol_norm`, `name`, `universe_source`, `source_status`, `last_verified`, `source_note`
+
+**`scripts/phase0_spike.py` outputs** (per §F):
+- `artifacts/phase0/universe.csv`
+- `artifacts/phase0/ohlcv.csv`
+- `artifacts/phase0/fundamentals.jsonl`
+- `artifacts/phase0/report.json`
+- `artifacts/phase0/coverage_report.md`
+- `artifacts/phase0/timing.csv`
+
+**Fundamentals `field_status` values** (single axis, per §B):
+`available` / `missing_expected` / `fetch_error`
+
+**Dry-run exit criteria** (per §C): failures classifiable, reproducible, recoverable — NOT "all green".
 
 ## One script: `scripts/phase0_spike.py`
 
@@ -111,7 +141,7 @@ phase0_spike.py --skip-fundamentals     # OHLCV only
 
 ### Pipeline
 
-1. **Universe** — akshare CSI 300+500 (live) + `config/hk_constituents.json` (static) → merge → `artifacts/phase0/universe.jsonl` (unified schema per §A)
+1. **Universe** — akshare CSI 300+500 (live) + `config/hk_constituents.json` (static) → merge → `artifacts/phase0/universe.csv` (unified 8-field schema per §A)
 2. **OHLCV** — Longbridge CLI `kline` per stock, N workers → `artifacts/phase0/ohlcv.csv`
 3. **Fundamentals** — East Money push2 per stock, sequential with Session → `artifacts/phase0/fundamentals.jsonl` (tri-state per §B)
 4. **Report** — aggregate into `artifacts/phase0/report.json` (fixed metrics per §D) + `artifacts/phase0/coverage_report.md` + `artifacts/phase0/timing.csv`
@@ -141,9 +171,9 @@ Binding rule: **row-level only** — see §E.
 
 | File | Content |
 |------|---------|
-| `artifacts/phase0/universe.jsonl` | Unified schema (§A): `market`, `symbol_raw`, `symbol_norm`, `name`, `universe_source` |
+| `artifacts/phase0/universe.csv` | Unified 8-col schema (§A): `market`, `symbol_raw`, `symbol_norm`, `name`, `universe_source`, `source_status`, `last_verified`, `source_note` |
 | `artifacts/phase0/ohlcv.csv` | `symbol_norm`, `market`, `rows`, `time_s`, `fetch_status`, `error_type`, `error_msg` |
-| `artifacts/phase0/fundamentals.jsonl` | `symbol_norm`, `market`, `fetch_status`, per-field `field_status` + value (§B), `error_type`, `error_msg` |
+| `artifacts/phase0/fundamentals.jsonl` | `symbol_norm`, `market`, per-field `field_status` + value (single-axis tri-state per §B), `error_type`, `error_msg` |
 | `artifacts/phase0/report.json` | Machine-readable fixed metrics (§D): universe total / OHLCV success / fundamentals coverage / error counts / sample detail |
 | `artifacts/phase0/coverage_report.md` | Human-readable version of `report.json` |
 | `artifacts/phase0/timing.csv` | `phase`, `total_stocks`, `succeeded`, `failed`, `elapsed_s`, `avg_per_stock_s` |
