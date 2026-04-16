@@ -37,6 +37,13 @@ Provenance fields (`source_status` / `last_verified` / `source_note`) are **univ
 
 **Warning — `last_verified` ≠ "manually audited".** For A-share rows it is simply the wall-clock time the upstream API was called during this run. For HK rows it is the date someone last reconciled the seed file against official HSI/HSCEI announcements. Do not conflate the two in downstream reports.
 
+**Field specification — `last_verified` allowed values (locked per external review, 2026-04-16):**
+- **Type:** ISO 8601 string, or `null` (HK seed before first audit only).
+- **Never a status enum.** Values like `"manually audited"`, `"pending"`, or any non-ISO-8601 sentinel MUST NOT appear here. If a later phase needs an audit-state signal, add a separate `audit_status` field rather than overloading this one.
+- **A-share rows:** full datetime with timezone — populated at runtime from the akshare call (e.g. `"2026-04-16T01:45:00+08:00"`).
+- **HK rows:** date only — the day the seed was last reconciled against official HSI/HSCEI announcements (e.g. `"2026-04-15"`); `null` until first reconciliation. Coverage report MUST tally `null` separately from real dates.
+- **Comparisons allowed:** age / freshness thresholds (e.g. `now() - last_verified > 90 days`). **Not allowed:** equality against literal strings like `"manually audited"` — those belong to a future `audit_status` field if/when added.
+
 `universe.csv` is the authoritative source of `symbol_norm`. OHLCV + fundamentals fetchers accept `symbol_norm` and internally adapt to whatever their upstream API expects.
 
 ### §B Fundamentals as single-axis tri-state
@@ -52,6 +59,8 @@ Each fundamentals field carries exactly one of three states:
 When the entire API call fails for a record, all fields on that record are marked `fetch_error` uniformly.
 
 Rationale: fundamentals coverage is inherently uneven, especially HK. Treating "HK `revenue_growth` missing" as a failure would drown real problems. Phase 0 deliberately does NOT split `fetch_error` into "API 500" vs "unexpected null" sub-categories — both are `fetch_error`, triaged later via `error_msg` if the counts warrant it.
+
+**Implementation note (Phase 0/1 compromise, NOT semantic equivalence).** The classifier in `scripts/phase0_spike.py` that maps "unexpected null" into `fetch_error` MUST carry an explicit code comment at its definition site stating: this is a Phase 0/1 diagnostic-precision tradeoff — a null return and a failed API call are NOT the same thing, they are merged here only because the counts don't yet justify a second state. A future phase that splits them (e.g. `fetch_error_null` vs `fetch_error_api`) should find this comment and treat it as the branching point. Amend this comment when the split happens; do not delete it.
 
 ### §C Dry-run exit criteria (not "looks pretty")
 
@@ -123,6 +132,8 @@ Before any code is written, these interfaces are frozen. Changing them later = r
 
 **Fundamentals `field_status` values** (single axis, per §B):
 `available` / `missing_expected` / `fetch_error`
+
+**`last_verified` type** (per §A): ISO 8601 string, or `null` for unverified HK seed rows. Never a status enum — if audit-state is needed, add a separate `audit_status` field.
 
 **Dry-run exit criteria** (per §C): failures classifiable, reproducible, recoverable — NOT "all green".
 
