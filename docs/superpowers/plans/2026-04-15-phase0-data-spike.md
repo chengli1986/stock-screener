@@ -10,6 +10,92 @@
 - Error report classifies failures by type
 - Timing report shows real per-stock and total duration
 
+## Review update (2026-04-16): tightened constraints
+
+After external review, these constraints are locked before any code is written. They supersede anything contradicting below.
+
+### §A Unified security schema (most important)
+
+Every stock carries this record across all phases — this is the join key between OHLCV, fundamentals, and the final report.
+
+| Field | Type | A-share example | HK example |
+|-------|------|-----------------|------------|
+| `market` | enum: `a` / `hk` | `a` | `hk` |
+| `symbol_raw` | string (as returned by source) | `600519.SH` / `sh600519` | `00700` / `0700.HK` |
+| `symbol_norm` | canonical form (join key) | `600519.SH` | `0700.HK` |
+| `name` | Chinese name | `贵州茅台` | `腾讯控股` |
+| `universe_source` | which list brought it in | `csi300` / `csi500` | `hk_seed_hsi` / `hk_seed_hscei` |
+
+Normalization rules:
+- A-share: `{6-digit code}.{SH|SZ}` — SSE codes (6xx) → `.SH`; SZSE codes (0xx / 3xx) → `.SZ`
+- HK: `{4-digit zero-padded}.HK` (e.g. `0700.HK`, never `700.HK`, never `00700`)
+
+`universe.jsonl` is the authoritative source of `symbol_norm`. OHLCV + fundamentals fetchers accept `symbol_norm` and internally adapt to whatever their upstream API expects.
+
+### §B Fundamentals as tri-state (not binary)
+
+Split the single status field into two:
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `fetch_status` | `ok` / `fetch_error` | Was the API call itself successful? |
+| `field_status` (per field) | `available` / `missing_expected` / `missing_unexpected` | Is each field present, known-missing, or unexpectedly gone? |
+
+`missing_expected` covers known HK gaps (`revenue_growth`, `gross_margin`, `net_margin` per Phase 0 API testing). These are NOT counted as errors.
+
+`missing_unexpected` = the field should exist (e.g. A-share PE) but is absent. This IS a flag.
+
+Rationale: fundamentals coverage is inherently uneven, especially HK. Treating "HK `revenue_growth` missing" as a failure would drown real problems.
+
+### §C Dry-run exit criteria (not "looks pretty")
+
+The 15-stock dry run is **not** judged by coverage percentages. It passes iff:
+
+1. **Every failure has an `error_type`** — no "unknown" bucket larger than 1-2 cases.
+2. **Every failure is reproducible** — re-running the same 15 symbols produces the same classification (modulo transient network flakes, which themselves must be classified).
+3. **Every failure is recoverable** — re-running `--limit 15` resumes cleanly from `artifacts/phase0/`; no manual cleanup required.
+
+Only when all three hold do we move to `--limit 70`.
+
+### §D Fixed report metrics (no scope creep)
+
+`artifacts/phase0/report.json` (machine-readable) + `coverage_report.md` (human-readable) contain ONLY these:
+
+1. Universe total (by market, by `universe_source`)
+2. OHLCV success rate (by market)
+3. Fundamentals coverage rate (by market, by field) — using §B tri-state
+4. Error counts (by `error_type`, by phase)
+5. Sample detail — the 15 dry-run rows verbatim, for audit
+
+No charts, no recommendations, no derived metrics.
+
+### §E Resume is row-level, not file-level
+
+On restart:
+- Load existing `ohlcv.csv` / `fundamentals.jsonl`
+- Skip rows where `fetch_status == ok`
+- Retry everything else (including `fetch_error` rows — may have been transient)
+- `--force` ignores resume entirely
+
+Do NOT skip a whole phase just because the file is non-empty — a mid-phase crash would then permanently skip that phase.
+
+### §F Output directory rename
+
+All Phase 0 outputs go under `artifacts/phase0/`, not `data/phase0/`. `data/` is reserved for production-grade outputs from Phase 1+.
+
+File formats:
+- `universe.jsonl`, `fundamentals.jsonl` — nested fields + tri-state status → JSONL
+- `ohlcv.csv`, `timing.csv` — flat summary rows → CSV
+- `report.json` + `coverage_report.md` — both kept; json is machine-read, md is human-read
+
+### §G ChiNext scope clarification
+
+- **MVP universe source = CSI 300 + CSI 500 only.**
+- CSI 500's construction rule already includes ChiNext stocks (e.g. `300750.SZ` 宁德时代 is a CSI 500 constituent). ChiNext stocks enter the universe *through CSI 500 membership*, not as a separate source.
+- "MVP does not include ChiNext" means: we do NOT add `chinext50` or `chinext_all` as a separate `universe_source`. We do NOT widen the pool.
+- The dry-run fixed sample may include a ChiNext stock **only if it is a current CSI 500 constituent**.
+- Post-MVP `chinext50` / `csi1000` inclusion is a scope decision, not a data fix.
+
 ## One script: `scripts/phase0_spike.py`
 
 ```
@@ -25,10 +111,10 @@ phase0_spike.py --skip-fundamentals     # OHLCV only
 
 ### Pipeline
 
-1. **Universe** — akshare CSI 300+500 (live) + `config/hk_constituents.json` (static) → merge → `data/phase0/universe.csv`
-2. **OHLCV** — Longbridge CLI `kline` per stock, N workers → `data/phase0/ohlcv_results.csv`
-3. **Fundamentals** — East Money push2 per stock, sequential with Session → `data/phase0/fundamental_results.csv`
-4. **Report** — aggregate into `data/phase0/coverage_report.md` + `data/phase0/timing.csv`
+1. **Universe** — akshare CSI 300+500 (live) + `config/hk_constituents.json` (static) → merge → `artifacts/phase0/universe.jsonl` (unified schema per §A)
+2. **OHLCV** — Longbridge CLI `kline` per stock, N workers → `artifacts/phase0/ohlcv.csv`
+3. **Fundamentals** — East Money push2 per stock, sequential with Session → `artifacts/phase0/fundamentals.jsonl` (tri-state per §B)
+4. **Report** — aggregate into `artifacts/phase0/report.json` (fixed metrics per §D) + `artifacts/phase0/coverage_report.md` + `artifacts/phase0/timing.csv`
 
 ### Error classification
 
@@ -45,19 +131,22 @@ Every fetch result gets one of:
 
 ### Resume
 
-- Before OHLCV phase: load existing `ohlcv_results.csv`, skip symbols with `status=ok`
-- Before fundamentals phase: load existing `fundamental_results.csv`, skip `status=ok`
+Binding rule: **row-level only** — see §E.
+
+- Before OHLCV phase: load existing `ohlcv.csv`, skip rows with `fetch_status == ok`
+- Before fundamentals phase: load existing `fundamentals.jsonl`, skip rows with `fetch_status == ok`
 - `--force` ignores resume state
 
 ### Output files
 
 | File | Content |
 |------|---------|
-| `data/phase0/universe.csv` | symbol, name, market, source_index |
-| `data/phase0/ohlcv_results.csv` | symbol, market, rows, time_s, status, error_type, error_msg |
-| `data/phase0/fundamental_results.csv` | symbol, market, pe, pb, roe, rev_growth, profit_growth, gross_margin, net_margin, mkt_cap, status, error_type, error_msg |
-| `data/phase0/coverage_report.md` | Human-readable: per-market field coverage, error breakdown, timing |
-| `data/phase0/timing.csv` | phase, total_stocks, succeeded, failed, elapsed_s, avg_per_stock_s |
+| `artifacts/phase0/universe.jsonl` | Unified schema (§A): `market`, `symbol_raw`, `symbol_norm`, `name`, `universe_source` |
+| `artifacts/phase0/ohlcv.csv` | `symbol_norm`, `market`, `rows`, `time_s`, `fetch_status`, `error_type`, `error_msg` |
+| `artifacts/phase0/fundamentals.jsonl` | `symbol_norm`, `market`, `fetch_status`, per-field `field_status` + value (§B), `error_type`, `error_msg` |
+| `artifacts/phase0/report.json` | Machine-readable fixed metrics (§D): universe total / OHLCV success / fundamentals coverage / error counts / sample detail |
+| `artifacts/phase0/coverage_report.md` | Human-readable version of `report.json` |
+| `artifacts/phase0/timing.csv` | `phase`, `total_stocks`, `succeeded`, `failed`, `elapsed_s`, `avg_per_stock_s` |
 
 ### Tests (minimal)
 
@@ -67,8 +156,8 @@ Every fetch result gets one of:
 
 ### Graduated execution
 
-1. `--limit 15` → fix symbol format / API issues
-2. `--limit 70` → verify rate limit handling + error classification
+1. `--limit 15` → fix symbol format / API issues — **graduation gate: §C three tests (classifiable / reproducible / recoverable), NOT coverage %**
+2. `--limit 70` → verify rate limit handling + error classification at scale
 3. Full run → real coverage numbers + timing baseline
 
 No mock tests. The whole point is testing real API behavior.
@@ -86,8 +175,8 @@ No mock tests. The whole point is testing real API behavior.
 Coverage report must state this clearly.
 
 **2. Dry run uses fixed samples, not random.** The 15-stock dry run must be deterministic and reproducible:
-- A-share 10: cover SSE + SZSE + ChiNext, sectors = financials, consumer, tech, manufacturing
-- HK 5: 00700 腾讯, 00005 汇丰, 00941 中移动, 09988 阿里, 03690 美团
+- A-share 10: cover SSE + SZSE + ChiNext, sectors = financials, consumer, tech, manufacturing. **ChiNext samples must themselves be current CSI 500 constituents** (see §G — ChiNext enters the universe through CSI 500, not as a separate source).
+- HK 5: `0700.HK` 腾讯, `0005.HK` 汇丰, `0941.HK` 中移动, `9988.HK` 阿里, `3690.HK` 美团 (normalized per §A)
 
 **3. Phase 0 = facts only.** The script reports what it sees. It does NOT:
 - Fill missing HK fields
