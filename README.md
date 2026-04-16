@@ -292,5 +292,18 @@ flowchart LR
 
 ## Status
 
-- Design spec: `docs/superpowers/specs/2026-04-14-stock-screener-design.md`
-- Phase: design complete, implementation planning next
+**Phase 0: implementation-ready** (2026-04-17 BJT). Design spec + spike plan v3 finalized after 3 rounds of external review. No implementation code yet — first commit will build `config/` + `scripts/` + `tests/` skeleton and run `--limit 15` dry run on frozen samples.
+
+### Design artifacts
+
+- [Design spec](docs/superpowers/specs/2026-04-14-stock-screener-design.md) — ~800 lines, 5-round review, 6 findings fixed
+- [Phase 0 spike plan v3](docs/superpowers/plans/2026-04-15-phase0-data-spike.md) — §A–§I frozen, implementation-ready
+- [Phase 0 infra plan](docs/superpowers/plans/2026-04-15-phase0-data-infra.md) — **SUPERSEDED**, do not reference for implementation
+
+### Phase 0 scope
+
+- **Universe**: CSI 300 + CSI 500 (A-share, ~800) + HSI + HSCEI (HK, ~100 provisional seed)
+- **Data**: OHLCV via Longbridge CLI + fundamentals via East Money push2 — 8 canonical fields per §I (`roe_ttm`, `revenue_growth`, `net_profit_growth`, `net_margin_ttm`, `gross_margin`, `pe_ttm`, `pb`, `market_cap`); HK has known gaps on `revenue_growth` / `net_margin_ttm` / `gross_margin`
+- **Output**: `artifacts/phase0/` (production `data/` reserved for Phase 1+)
+- **Dry-run**: 15 frozen samples (10 A-share + 5 HK), verified against live index membership 2026-04-16
+- **Exit criteria**: classifiable + reproducible + recoverable failures, NOT coverage %
