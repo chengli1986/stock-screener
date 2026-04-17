@@ -226,6 +226,21 @@ This distinction is critical for implementation: do not apply percentile rank to
 - Each stock carries a confidence label (high / medium / low) based on missing factor count
 - Low-confidence stocks are not hard-excluded but rank lower naturally
 
+**Sector-aware `missing_expected` classification (Phase 1 implementation)**
+
+Phase 0 data spike confirmed that certain fields are structurally absent for specific sectors — not API failures. Phase 1 must distinguish these from real fetch errors by tagging each stock's sector at universe generation time (East Money `f127` field, fetched alongside fundamentals at no extra API cost).
+
+Mapping table (configurable in `factors.json`):
+
+| Sector | Fields structurally absent | Reason |
+|--------|---------------------------|--------|
+| Financials (banks, insurance, brokers) | `gross_margin` | No direct-cost concept; revenue = interest spread + fees |
+| HK-listed stocks (all sectors) | `revenue_growth`, `net_margin_ttm`, `gross_margin`, `net_profit_growth` | East Money push2 does not cover these fields for HK H-shares |
+
+Classifier logic: before marking a null/zero field as `fetch_error`, check `(market, sector, field_name)` against this table. If matched → `missing_expected`. Only unmatched nulls are `fetch_error` and trigger alerts.
+
+This ensures financial-sector stocks are fully scored on the factors available to them (ROE, net profit growth, PE, PB, market cap) without being penalized for structurally absent gross margin.
+
 ### Dimension 1: Fundamentals (4 factors)
 
 | Factor | Calculation | Source | Direction | A/HK |
