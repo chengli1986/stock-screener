@@ -147,16 +147,18 @@ Phase 0 captures exactly these 8 fundamentals fields per stock, in this **fixed 
 |---|-------|------|--------|---------------------|----------------|
 | 1 | `roe_ttm` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `available` |
 | 2 | `revenue_growth` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `missing_expected` |
-| 3 | `net_profit_growth` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `available` |
+| 3 | `net_profit_growth` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `missing_expected` |
 | 4 | `net_margin_ttm` | Core factor (spec §3.1 Dim 1) | East Money push2 | `available` | `missing_expected` |
-| 5 | `gross_margin` | Reserve / audit | East Money push2 | `available` | `missing_expected` |
+| 5 | `gross_margin` | Reserve / audit | East Money push2 | `missing_expected`(financial sector); `available` otherwise | `missing_expected` |
 | 6 | `pe_ttm` | Reserve (excluded from core scoring per spec; still measured to support guard rules like `PE > 0`) | East Money push2 | `available` | `available` |
 | 7 | `pb` | Reserve | East Money push2 | `available` | `available` |
 | 8 | `market_cap` | Reserve / universe scale reporting | East Money push2 | `available` | `available` |
 
 Field names are lowercase_snake_case canonical keys; the fetcher translates East Money raw field names into these keys.
 
-**Default `missing_expected` set for HK is exactly `{revenue_growth, net_margin_ttm, gross_margin}`.** This is the pre-run baseline used by the classifier, coverage report, and tests.
+**`missing_expected` sets — updated from dry-run 2026-04-17 (per §I update rule):**
+- HK: `{revenue_growth, net_margin_ttm, gross_margin, net_profit_growth}` — `net_profit_growth` added; pre-run assumed `available` but dry run showed East Money returns 0.0 for all 5 HK stocks.
+- A-share `gross_margin`: `missing_expected` for financial sector (banks/insurance/brokers — East Money returns null, not a data error). All other A-share sectors: `available`.
 
 **Update rule (NOT "whichever feels right"):**
 - If the 15-stock dry run confirms this set — no change.
