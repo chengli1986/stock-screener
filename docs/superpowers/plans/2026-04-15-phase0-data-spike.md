@@ -10,6 +10,26 @@
 - Error report classifies failures by type
 - Timing report shows real per-stock and total duration
 
+## Phase 0 Results (2026-04-17) — ALL CRITERIA MET ✅
+
+**Universe**: 885 stocks (A-share 800 = CSI300×300 + CSI500×500; HK 85 = HSI×50 + HSCEI×35)
+
+**OHLCV**: A-share 797/800 (99.6%), HK 85/85 (100%) — 3 transient timeouts, resume-recoverable
+
+**Fundamentals**: 800/800 A-share OK, 85/85 HK OK
+- `gross_margin` missing_expected: 79 A-share stocks (financial sector — expected)
+- HK 4 fields missing_expected: all 85 stocks (revenue_growth / net_profit_growth / net_margin_ttm / gross_margin)
+
+**Timing baseline**:
+- OHLCV: 2.28s/stock, ~33 min full run
+- Fundamentals: 2.75s/stock, ~40 min full run
+
+**New findings for Phase 1 backlog**:
+
+1. **`roe_ttm = 0.0` as true value** — 三峡能源 (600905.SH), 华电新能 (600930.SH) [电力, early-stage ROE near zero], 神州细胞 (688520.SH) [pre-profit biotech]. Current classifier treats `value == 0` as `fetch_error`, but 0.0 can be a real ROE for low/no-profit stocks. Phase 1 must refine: use sector + PE sign to distinguish true-zero from missing.
+
+2. **East Money HK coverage gap** — 恒生银行 (0011.HK): all 4 non-missing_expected fields return 0/null (market_cap = 0.0). Complete data absence for this stock from East Money push2. Phase 1 should flag such stocks and consider fallback source (e.g. Longbridge fundamentals API).
+
 ## Review update (2026-04-16): tightened constraints
 
 After external review, these constraints are locked before any code is written. They supersede anything contradicting below.
