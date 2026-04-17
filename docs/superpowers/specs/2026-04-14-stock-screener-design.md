@@ -640,6 +640,20 @@ When the same stock appears in multiple runs whose 10-day evaluation windows ove
 - Fundamentals (ROE, growth, margin): coverage > 85%
 - News: coverage > 60% (news is naturally sparse; acceptable if explainable)
 
+**Phase 0 spike results (2026-04-17):** Klines 99.6% A-share / 100% HK ✅; Fundamentals 100% both markets ✅. M0 pass criteria already met at the data-availability level. Remaining M0 work = productionize the fetcher (sector tagging, caching, error retry) before M1 plugs in.
+
+**Known data issues — Phase 1 backlog (from Phase 0 full run, 885 stocks):**
+
+1. **`roe_ttm = 0.0` as true value vs missing data**
+   - Affected: 三峡能源 (600905.SH), 华电新能 (600930.SH) — 电力行业，early-stage low-ROE; 神州细胞 (688520.SH) — pre-profit biotech (PE = -3762).
+   - Root cause: current classifier treats `value == 0` as `fetch_error`, but 0.0 is the genuine ROE for low/no-profit stocks. East Money returns 0.0 (not null) for these.
+   - Phase 1 fix: use `(sector, PE sign)` to disambiguate. Rule: if `pe_ttm < 0` (loss-making) OR sector is 电力/新能源 at early-stage, treat `roe_ttm = 0.0` as `available` with value 0, not `fetch_error`. Implement alongside the sector tagging work (f127 → Shenwan mapping).
+
+2. **East Money HK data coverage gap — 恒生银行 (0011.HK)**
+   - Affected: 1 stock out of 85 HK seeds. All non-missing_expected fields (roe_ttm, pe_ttm, pb, market_cap) return 0 / null from East Money push2 secid `116.00011`.
+   - Root cause: East Money push2 does not have complete data for this specific HK stock; not a network or secid format issue.
+   - Phase 1 fix: add a fallback path for HK fundamentals — Longbridge fundamentals API as secondary source when East Money returns all-zero. Flag the stock in the coverage report with `source = longbridge_fallback`.
+
 #### M1: Funnel Pipeline
 
 **Goal:** Layer 1 + Layer 2 end-to-end, producing ranked top 20.
