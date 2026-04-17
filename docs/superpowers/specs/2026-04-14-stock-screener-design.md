@@ -228,16 +228,25 @@ This distinction is critical for implementation: do not apply percentile rank to
 
 **Sector-aware `missing_expected` classification (Phase 1 implementation)**
 
-Phase 0 data spike confirmed that certain fields are structurally absent for specific sectors — not API failures. Phase 1 must distinguish these from real fetch errors by tagging each stock's sector at universe generation time (East Money `f127` field, fetched alongside fundamentals at no extra API cost).
+Phase 0 data spike confirmed that certain fields are structurally absent for specific sectors — not API failures. Phase 1 must distinguish these from real fetch errors by tagging each stock's sector during fundamentals fetching.
 
-Mapping table (configurable in `factors.json`):
+**Industry classification source**
 
-| Sector | Fields structurally absent | Reason |
-|--------|---------------------------|--------|
-| Financials (banks, insurance, brokers) | `gross_margin` | No direct-cost concept; revenue = interest spread + fees |
-| HK-listed stocks (all sectors) | `revenue_growth`, `net_margin_ttm`, `gross_margin`, `net_profit_growth` | East Money push2 does not cover these fields for HK H-shares |
+Two-layer approach:
+- **Primary**: East Money `f127` field — fetched in the same `push2` API call as fundamentals, zero extra cost. Returns East Money level-2 industry name (e.g. `银行Ⅱ`, `白酒Ⅱ`, `白色家电`).
+- **Reference**: Shenwan level-1 industry classification (申万一级行业, 28 categories). Available via `akshare.index_component_sw()` for batch sector lookup, or cross-referenced against East Money names via a static mapping table.
 
-Classifier logic: before marking a null/zero field as `fetch_error`, check `(market, sector, field_name)` against this table. If matched → `missing_expected`. Only unmatched nulls are `fetch_error` and trigger alerts.
+Implementation: map `f127` East Money names → Shenwan level-1 sector (stored in `factors.json`). Shenwan level-1 is preferred for rule definitions as it is the industry standard used by Chinese institutional investors and is most legible for business users.
+
+**`missing_expected` sector rules (configurable in `factors.json`)**
+
+| Shenwan Level-1 Sector | Fields structurally absent | Reason |
+|------------------------|---------------------------|--------|
+| 银行 (Banks) | `gross_margin` | Revenue = interest spread + fees; no direct-cost concept |
+| 非银金融 (Non-bank financials: insurance, brokers, trusts) | `gross_margin` | Same as banks |
+| HK-listed stocks (all sectors) | `revenue_growth`, `net_margin_ttm`, `gross_margin`, `net_profit_growth` | East Money push2 does not provide these fields for HK H-shares |
+
+Classifier logic: before marking a null/zero field as `fetch_error`, look up `(market, sw_sector, field_name)` in this table. If matched → `missing_expected`. Only unmatched nulls are `fetch_error` and trigger real alerts.
 
 This ensures financial-sector stocks are fully scored on the factors available to them (ROE, net profit growth, PE, PB, market cap) without being penalized for structurally absent gross margin.
 
