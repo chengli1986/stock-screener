@@ -654,15 +654,25 @@ When the same stock appears in multiple runs whose 10-day evaluation windows ove
    - Root cause: East Money push2 does not have complete data for this specific HK stock; not a network or secid format issue.
    - Phase 1 fix: add a fallback path for HK fundamentals — Longbridge fundamentals API as secondary source when East Money returns all-zero. Flag the stock in the coverage report with `source = longbridge_fallback`.
 
-#### M1: Funnel Pipeline
+#### M1: Funnel Pipeline (dual-channel)
 
-**Goal:** Layer 1 + Layer 2 end-to-end, producing ranked top 20.
+**Amended 2026-04-18.** Originally framed as a single funnel, M1 was split into two parallel channels after a strategy-posture review ([`2026-04-18-layer1-weekly-design.md §0`](../specs/2026-04-18-layer1-weekly-design.md)):
+
+- **M1 (trend-side)** — right-side trend-confirmation filter. What this section describes. Shipping first.
+- **M1.5 (dislocation-side)** — left-side contrarian / event-shock / valuation-mean-reversion filter. Separate rule set, starts brainstorming after M1 ships. Output tagged `entry_pathway='dislocation'`, concatenated with M1 output at Layer 2 scoring time.
+
+Both channels feed the same Layer 2 scorer. Layer 2 factor weights may differ per pathway (TBD when M1.5 design session opens).
+
+**Goal (M1 trend-side):** Layer 1 trend filter + Layer 2 scoring end-to-end, producing ranked top 20 from the trend-side pool.
 
 **Pass criteria (checklist):**
 - Top 20 contains no suspended / ST / obviously illiquid stocks
 - Both A-share and HK pools produce results with non-degenerate score distributions
 - Key factors and ranking direction are consistent (spot-check: highest ROE stocks should score high on fundamentals dimension)
 - Pipeline completes within 10 minutes wall clock
+- Output rows carry `entry_pathway='trend'` so future M1.5 output can be concatenated without schema change
+
+**M1 Layer 1 trend-side rules are fully specified in [`2026-04-18-layer1-weekly-design.md §3`](../specs/2026-04-18-layer1-weekly-design.md).** This section's MVP table in §5.1 (Layer 1 row) should be read as covering the trend side only.
 
 #### M2: Backtest Verification
 

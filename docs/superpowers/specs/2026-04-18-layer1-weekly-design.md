@@ -11,7 +11,81 @@
 
 This spec is the output of a brainstorming session that took place on 2026-04-18, after Phase 0 spike was completed and reviewed. The original MVP design spec (§5) used Milestones M0–M4; "Phase 1" is loose terminology we used in conversation. This document scopes the concrete next implementation step as **M0 productionization + M1 Layer 1 Weekly**.
 
-User went through three rounds of rigorous review on Sections 2 and 3 before freezing. Sections 4 and 5 are explicitly parked pending another session.
+User went through three rounds of rigorous review on Sections 2 and 3 before freezing. Sections 4 and 5 are explicitly parked pending another session. A strategy-posture review (§0 below) was added after §3 freeze but before §4 opens.
+
+---
+
+## Section 0 — Strategy Posture & Known Gaps
+
+**Added 2026-04-18 after §3 freeze**, because the user surfaced a fundamental mismatch between the technical rule set and their real trading preference. Landing this in the spec before §4 opens so downstream sections (sector tagging, fallback, ops) don't get built on a quietly wrong strategy assumption.
+
+### Mission statement
+
+**当前 Layer 1 的目标不是寻找最优买点，而是构建一个可运行、可解释、可回测的 trend-side baseline。**
+(Layer 1's goal is NOT to find optimal entry points. Its goal is to build a runnable, explainable, backtestable trend-side baseline.)
+
+Anything beyond this — optimal entry timing, contrarian plays, valuation-driven entries — is explicitly out of scope for Layer 1 Weekly and will be addressed by M1.5 or Layer 2.
+
+### Declaration
+
+The four Layer 1 rules in §3 (`ma20_slope_positive`, `price_above_ma20`, `volatility_cap`, `volume_not_collapsing`) are **right-side trend-confirmation filters**. They are optimized to:
+
+- Avoid catching falling knives
+- Survive mechanical weekly execution
+- Produce a stable, explainable, low-complexity output
+
+They systematically screen **out** stocks that are:
+- In a drawdown (MA20 down, price below MA20)
+- Experiencing elevated volatility (common after event shocks)
+- Still reflecting panic-driven volume spikes
+
+### Known gap — user's real trading style
+
+User's actual alpha source is closer to:
+> "Good company + event-driven drawdown + fundamentals still intact + valuation mean-reversion"
+
+This is a **left-side / contrarian / fundamentals-driven** framework. The current Layer 1 rules **will filter out exactly the opportunities the user is looking for** — because mis-priced quality names in a drawdown typically have all four rules failing at once.
+
+If we ship only the right-side filter and call it "the screener", the user ends up with a technically clean system that produces output they wouldn't actually buy.
+
+### Decision — defer, don't rewrite
+
+Chosen path (user confirmed 2026-04-18):
+
+1. **Keep the §3 right-side Layer 1 as frozen**. The design work already invested (7 rounds of external review across §2/§3) is not wasted — a trend-side pool has independent value as a baseline and as one of two eventual entry pathways.
+2. **Do NOT try to bolt contrarian logic onto the existing 4 rules.** Left-side entries need fundamentally different signals: event-shock classification, drawdown-vs-index / historical-percentile, valuation percentile (PE/PB vs 3–5y history), fundamental-quality gates (ROE / FCF / leverage stability), and sector-aware event-type parsing. Most of these live at the **factor / scoring layer**, not as hard gates.
+3. **Schedule a new stage "M1.5 Dislocation-side Funnel"** after current M1 ships, as a parallel pipeline with its own rules and its own candidate list.
+4. **Tag output with `entry_pathway`** from day one so M1.5 candidates can later be distinguished and concatenated with M1 candidates in Layer 2 scoring without schema gymnastics.
+
+### Implications for current frozen §2/§3
+
+- **`screening_summary_df` gains a 5th column** `entry_pathway ∈ {'trend', 'dislocation'}` — fixed to `'trend'` in this stage; `'dislocation'` values produced by future M1.5 pipeline. (See §2 amendment below.)
+- **§3 rule table** carries an explicit note: thresholds are tuned for right-side trend confirmation; they do NOT apply to dislocation entries.
+- **No other §2/§3 changes.** Schemas, rule definitions, test counts unchanged.
+
+### M1.5 scope (sketch only — full design in a later session)
+
+When M1 is running in live mode and producing trend-side candidates, start M1.5 design with a brainstorming session covering:
+
+- **Event classification**: earnings miss vs policy shock vs sector systemic vs market panic — classify via news/announcement parsing (likely LLM)
+- **Drawdown-is-overdone test**: stock drawdown > N × index drawdown? Or stock price below its K-day percentile?
+- **Fundamental no-deterioration test**: latest report ROE / FCF / leverage ratios still within rolling-window bounds
+- **Valuation mean-reversion setup**: PE(TTM) or PB currently below its 3–5y historical P25?
+- **Output**: separate candidates list tagged `entry_pathway='dislocation'`, merged with trend list at Layer 2 scoring time (Layer 2 factor weights may differ per pathway — TBD)
+
+### Discussion log
+
+The following dialogue preceded this section, captured for future readers:
+
+**User:**
+> 现在的技术面分析好像看的是右侧交易，这种在选股策略上一定是好的吗？我在真实交易中，反而会去买价格比较低/估值低的股票，尤其是在事件驱动后大跌，但是长期来看基本面是好的那些标的，你怎么看
+
+**Review response (abridged, full-length in session transcript):**
+> 现在这套 Layer 1 更偏"右侧确认"：它在找的是"趋势没坏、价格站上均线、波动别太离谱、成交别塌"... 容易错过"事件冲击后被错杀"的左侧机会... 你要的是：好公司 + 事件冲击后的错误定价 + 估值回归... 这更像"基本面驱动的逆向/半左侧"框架，而不是"技术确认型筛选"... 如果你的 alpha 其实来自"好公司被错杀后的修复"，那就该尽早在设计层承认这一点，而不是等系统做完才发现它一直在排除你的主战场.
+
+**Options offered:** (A) rewrite Layer 1 as left-side / (B) dual-channel / (C) only document the gap.
+
+**User's resolution:** defer (= path B with M1.5 as separate stage); document now, not later.
 
 ---
 
@@ -203,11 +277,13 @@ raw_value = data.get("f173") if raw_presence else None
 
 内存中用 `@dataclass(frozen=True) RuleResult` 传递，**不要把 dataclass/object 塞进 DataFrame 单元格**。持久化拆为：
 
-**`screening_summary_df` (885 × 4)**
+**`screening_summary_df` (885 × 5)**
 
 ```
-symbol_norm, overall_passed, passed_rule_count, failed_rule_count
+symbol_norm, overall_passed, passed_rule_count, failed_rule_count, entry_pathway
 ```
+
+`entry_pathway ∈ {'trend', 'dislocation'}`. Fixed to `'trend'` for the current Layer 1 Weekly stage. A future M1.5 Dislocation-side Funnel (see §0) produces its own summary rows with `entry_pathway='dislocation'`, and the two tables concatenate cleanly at Layer 2 scoring time without schema gymnastics. Column reserved from day one for this reason.
 
 **`rule_results_df` (885 × 4 = 3540 rows × 7 cols)**
 
@@ -299,6 +375,10 @@ class RuleResult:
 ```
 
 `reason_code` 类型为 `str`（不用 Enum）；新增规则私有码（如 `invalid_volume_baseline`）必须在 schema.py 文档更新同一 PR 里。
+
+### 策略风格注记
+
+**These four thresholds are tuned for right-side trend confirmation.** They do NOT apply to dislocation / contrarian entries — see §0 for the rationale and for M1.5's planned separate rule set. A stock currently in a drawdown but with intact fundamentals will fail all four rules here; that is intended behavior for the trend-side filter, not a bug.
 
 ### 4 条规则精确定义
 
@@ -457,8 +537,9 @@ Parked for next session.
 | Date | Section | Rounds | Outcome |
 |------|---------|--------|---------|
 | 2026-04-18 | §1 scope | 1 | frozen |
-| 2026-04-18 | §2 architecture | 5 (v1 → v5) | frozen |
-| 2026-04-18 | §3 rules | 2 (v1 → v2) | frozen |
+| 2026-04-18 | §2 architecture | 5 (v1 → v5); +1 amendment (entry_pathway col added after §0) | frozen |
+| 2026-04-18 | §3 rules | 2 (v1 → v2); +1 amendment (trend-side posture note) | frozen |
+| 2026-04-18 | §0 strategy posture | 1 | frozen (added after §3 freeze, before §4 opens) |
 | TBD | §4 sector + fallback | in progress | — |
 | TBD | §5 ops + entrypoint | not started | — |
 
@@ -466,4 +547,6 @@ Parked for next session.
 
 ## Session end state (2026-04-18 BJT)
 
-Sections 1–3 frozen; §4 drafted but reviewing; §5 not yet opened. Next session resumes at §4 with probe design and HK fallback threshold.
+§0 (strategy posture, added late session), §1 (scope), §2 (architecture v5 + entry_pathway amendment), §3 (rules v2 + posture note) all frozen. §4 drafted but reviewing; §5 not yet opened. Next session resumes at §4 with probe design and HK fallback threshold.
+
+Parent-spec cross-reference update: `2026-04-14-stock-screener-design.md` §5 M1 was amended in the same commit to reflect the M1 = trend-side / M1.5 = dislocation-side split (matches §0 decision here).
