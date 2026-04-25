@@ -36,7 +36,10 @@ from datetime import datetime, timezone, timedelta
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 CONFIG_DIR = os.path.join(REPO_DIR, "config")
-ARTIFACTS_DIR = os.path.join(REPO_DIR, "artifacts", "phase0")
+# Subdir override lets the daily canary write to artifacts/canary-latest/
+# without overwriting the full-run baseline at artifacts/phase0/.
+ARTIFACTS_SUBDIR = os.environ.get("PHASE0_ARTIFACTS_SUBDIR", "phase0")
+ARTIFACTS_DIR = os.path.join(REPO_DIR, "artifacts", ARTIFACTS_SUBDIR)
 
 HK_CONSTITUENTS_FILE = os.path.join(CONFIG_DIR, "hk_constituents.json")
 UNIVERSE_CSV = os.path.join(ARTIFACTS_DIR, "universe.csv")
