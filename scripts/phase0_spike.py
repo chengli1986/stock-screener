@@ -39,6 +39,10 @@ CONFIG_DIR = os.path.join(REPO_DIR, "config")
 # Subdir override lets the daily canary write to artifacts/canary-latest/
 # without overwriting the full-run baseline at artifacts/phase0/.
 ARTIFACTS_SUBDIR = os.environ.get("PHASE0_ARTIFACTS_SUBDIR", "phase0")
+if os.path.isabs(ARTIFACTS_SUBDIR) or os.path.normpath(ARTIFACTS_SUBDIR).startswith(".."):
+    raise ValueError(
+        f"PHASE0_ARTIFACTS_SUBDIR must be a simple relative subdirectory name, got: {ARTIFACTS_SUBDIR!r}"
+    )
 ARTIFACTS_DIR = os.path.join(REPO_DIR, "artifacts", ARTIFACTS_SUBDIR)
 
 HK_CONSTITUENTS_FILE = os.path.join(CONFIG_DIR, "hk_constituents.json")
