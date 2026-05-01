@@ -41,6 +41,12 @@ EXTRA_COLS = ",".join([
     "REPORT_DATE",
 ])
 
+PROFILE_COLS = ",".join([
+    "SECURITY_CODE",
+    "BOARD_NAME_2LEVEL",  # 东方财富行业分类（近似申万二级）
+    "ORG_PROFILE",        # 公司一句话简介
+])
+
 
 # ── 数据加载 ─────────────────────────────────────────────────────────────────
 
@@ -110,6 +116,43 @@ def fetch_extra_fields(symbols: list[str], batch_size: int = 50) -> dict[str, di
 
     ok = sum(1 for v in result.values() if v)
     print(f"  扣非数据: {ok}/{len(symbols)} 只拿到")
+    return result
+
+
+def fetch_profile_fields(symbols: list[str], batch_size: int = 50) -> dict[str, dict]:
+    """
+    批量拉取行业分类 + 公司简介。
+    返回 {symbol: {industry, profile}} 。
+    """
+    result: dict[str, dict] = {s: {} for s in symbols}
+    batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    print(f"  拉取 {len(symbols)} 只股票行业+简介（{len(batches)} 批次）...")
+
+    for i, batch in enumerate(batches, 1):
+        codes_str = ",".join(f'"{s}"' for s in batch)
+        try:
+            r = requests.get(DC_URL, params={
+                "reportName": "RPT_F10_ORG_BASICINFO",
+                "columns": PROFILE_COLS,
+                "filter": f"(SECURITY_CODE in ({codes_str}))",
+                "pageSize": len(batch),
+            }, headers=DC_HEADERS, timeout=20)
+            d = r.json()
+            if d.get("success") and d.get("result"):
+                for row in d["result"]["data"]:
+                    code = row.get("SECURITY_CODE", "")
+                    if code in result:
+                        profile = (row.get("ORG_PROFILE") or "").strip()
+                        result[code] = {
+                            "industry": row.get("BOARD_NAME_2LEVEL") or "—",
+                            "profile":  profile[:60] if profile else "—",
+                        }
+        except Exception as e:
+            print(f"  profile batch {i} error: {e}")
+        time.sleep(0.3)
+
+    ok = sum(1 for v in result.values() if v)
+    print(f"  行业简介数据: {ok}/{len(symbols)} 只拿到")
     return result
 
 
@@ -213,7 +256,7 @@ def bar(count: int, scale: int, color: str = "#17becf") -> str:
 
 # ── HTML 生成 ─────────────────────────────────────────────────────────────────
 
-def build_stock_row(r: dict, universe: dict, extra_map: dict, show_analysis: bool = True) -> str:
+def build_stock_row(r: dict, universe: dict, extra_map: dict, profile_map: dict) -> str:
     p0 = r["periods"][0]
     sym = r["symbol"]
     rg  = p0["revenue_growth"]
@@ -234,36 +277,39 @@ def build_stock_row(r: dict, universe: dict, extra_map: dict, show_analysis: boo
     # 扣非净利润同比显示
     if dng is not None:
         dng_disp = f"{dng:+.1f}%"
-        # 扣非增速与净利润增速差距
         gap = ng - dng
         if gap > 20:
-            dng_color = "#e3b341"   # 橙色警告：非经常性收益显著
+            dng_color = "#e3b341"   # 橙：非经常性收益显著
         elif dng >= 30:
-            dng_color = "#3fb950"   # 绿色：扣非同样亮眼
+            dng_color = "#3fb950"   # 绿：扣非同样亮眼
         else:
             dng_color = "var(--text-muted)"
     else:
         dng_disp  = "—"
         dng_color = "var(--text-muted)"
 
-    cont  = "✓" if passes_continuity(r["periods"], 15, 2) else "—"
+    cont       = "✓" if passes_continuity(r["periods"], 15, 2) else "—"
     cont_color = "#3fb950" if cont == "✓" else "var(--text-muted)"
-
-    analysis = classify_growth(rg, ng, extra, r["periods"]) if show_analysis else ""
-
+    analysis   = classify_growth(rg, ng, extra, r["periods"])
     period_name = p0.get("period_name", "")
+
+    pinfo    = profile_map.get(sym, {})
+    industry = pinfo.get("industry", "—")
+    profile  = pinfo.get("profile", "—")
 
     return (
         f'<tr>'
         f'<td style="font-family:monospace;font-size:12px;">{sym}</td>'
-        f'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</td>'
-        f'<td style="text-align:center;"><span style="font-size:10px;color:{index_color};">{index}</span></td>'
+        f'<td style="white-space:nowrap;">{name}</td>'
+        f'<td style="text-align:center;white-space:nowrap;"><span style="font-size:10px;color:{index_color};">{index}</span></td>'
+        f'<td style="text-align:center;font-size:11px;white-space:nowrap;">{industry}</td>'
+        f'<td style="font-size:11px;color:var(--text-muted);max-width:200px;">{profile}</td>'
         f'<td style="text-align:right;color:#17becf;">{rg:+.1f}%</td>'
         f'<td style="text-align:right;color:#9ecde6;">{ng:+.1f}%</td>'
         f'<td style="text-align:right;color:{dng_color};font-weight:600;">{dng_disp}</td>'
         f'<td style="text-align:center;color:{cont_color};font-size:12px;">{cont}</td>'
-        f'<td style="font-size:11px;color:var(--text-muted);max-width:220px;">{analysis}</td>'
-        f'<td style="font-size:11px;color:var(--text-muted);">{period_name}</td>'
+        f'<td style="font-size:11px;color:var(--text-muted);max-width:180px;">{analysis}</td>'
+        f'<td style="font-size:11px;color:var(--text-muted);white-space:nowrap;">{period_name}</td>'
         f'</tr>\n'
     )
 
@@ -274,6 +320,8 @@ def build_table_header() -> str:
         <th><span class="zh">代码</span><span class="en">Code</span></th>
         <th><span class="zh">名称</span><span class="en">Name</span></th>
         <th style="text-align:center;"><span class="zh">指数</span><span class="en">Index</span></th>
+        <th style="text-align:center;"><span class="zh">行业</span><span class="en">Industry</span></th>
+        <th><span class="zh">主营简介</span><span class="en">Business</span></th>
         <th style="text-align:right;"><span class="zh">营收同比</span><span class="en">Rev YoY</span></th>
         <th style="text-align:right;"><span class="zh">净利同比</span><span class="en">NP YoY</span></th>
         <th style="text-align:right;"><span class="zh">扣非净利同比</span><span class="en">Adj NP YoY</span></th>
@@ -284,7 +332,7 @@ def build_table_header() -> str:
     </thead>"""
 
 
-def generate_html(records: list[dict], universe: dict, extra_map: dict, run_ts: str) -> str:
+def generate_html(records: list[dict], universe: dict, extra_map: dict, profile_map: dict, run_ts: str) -> str:
     # ── 统计 ─────────────────────────────────────────────────────────────────
     total = len(records)
     data_ok_list = [
@@ -349,11 +397,11 @@ def generate_html(records: list[dict], universe: dict, extra_map: dict, run_ts: 
     # ── 股票表格 rows ─────────────────────────────────────────────────────────
     VISIBLE = 30
     stock_rows_visible = "".join(
-        build_stock_row(r, universe, extra_map)
+        build_stock_row(r, universe, extra_map, profile_map)
         for r in passed_30[:VISIBLE]
     )
     stock_rows_hidden = "".join(
-        build_stock_row(r, universe, extra_map)
+        build_stock_row(r, universe, extra_map, profile_map)
         for r in passed_30[VISIBLE:]
     )
 
@@ -494,18 +542,20 @@ def generate_html(records: list[dict], universe: dict, extra_map: dict, run_ts: 
   <div class="callout" style="margin-bottom:10px;padding:10px 14px;">
     <span class="zh">
       <strong>列说明</strong>：
-      净利同比 = 含非经常性损益的归母净利润增速（筛选门槛依据）；
-      <strong>扣非净利同比</strong> = 扣除非经常性损益后的归母净利润增速（反映主业真实增长）；
-      两列差距大时（标橙）说明净利润有一次性收益撑高。
+      行业 = 东方财富行业分类（结构近似申万二级，数据来源 RPT_F10_ORG_BASICINFO）；
+      主营简介来自东方财富公司简档（ORG_PROFILE）；
+      净利同比 = 含非经常性损益；
+      <strong>扣非净利同比</strong> = 扣除非经常性损益，反映主业真实增长，差距大时标橙。
       指数：<span style="color:#17becf;">■</span> 沪深300&nbsp;
       <span style="color:#3fb950;">■</span> 中证500&nbsp;
       <span style="color:#ffd700;">■</span> 两者均有。
     </span>
     <span class="en">
       <strong>Column notes</strong>:
-      NP YoY = reported NP incl. non-recurring items (gate basis);
-      <strong>Adj NP YoY</strong> = net profit excl. non-recurring items (reflects true core growth).
-      Large gap (orange) = headline NP inflated by one-off gains.
+      Industry = East Money board classification (mirrors Shenwan L2 structure; source: RPT_F10_ORG_BASICINFO);
+      Business = East Money company profile (ORG_PROFILE);
+      NP YoY = reported NP incl. non-recurring items;
+      <strong>Adj NP YoY</strong> = excl. non-recurring items, large gap highlighted orange.
       Index: <span style="color:#17becf;">■</span> CSI300&nbsp;
       <span style="color:#3fb950;">■</span> CSI500&nbsp;
       <span style="color:#ffd700;">■</span> Both.
@@ -588,11 +638,14 @@ def main() -> None:
         r["symbol"] for r in data_ok_list
         if passes_gate(r["periods"], 30)
     ]
-    print(f"\n过30%门槛: {len(passing_symbols)} 只，开始拉扣非净利润...")
+    print(f"\n过30%门槛: {len(passing_symbols)} 只")
+    print("拉取扣非净利润...")
     extra_map = fetch_extra_fields(passing_symbols)
+    print("拉取行业分类+公司简介...")
+    profile_map = fetch_profile_fields(passing_symbols)
 
     print("\nGenerating HTML section...")
-    section_html = generate_html(records, universe, extra_map, run_ts)
+    section_html = generate_html(records, universe, extra_map, profile_map, run_ts)
 
     print(f"Injecting into {DOCS_PAGE}...")
     content = DOCS_PAGE.read_text(encoding="utf-8")
