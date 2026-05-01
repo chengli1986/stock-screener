@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import akshare as ak
+
 BJT = timezone(timedelta(hours=8))
 REPO_DIR = Path(__file__).resolve().parent.parent
 CACHE_JSONL = REPO_DIR / "artifacts" / "growth-gate-probe" / "fundamentals.jsonl"
@@ -17,6 +19,20 @@ DOCS_PAGE = Path("/home/ubuntu/docs-site/pages/stock-screener.html")
 SECTION_START = "<!-- ===== GROWTH-GATE-PROBE ===== -->"
 SECTION_END   = "<!-- ===== /GROWTH-GATE-PROBE ===== -->"
 INJECT_BEFORE = "<section id=\"layer1\">"
+
+
+def load_name_map() -> dict[str, str]:
+    """Fetch CSI300+CSI500 constituent names from csindex.com.cn."""
+    name_map: dict[str, str] = {}
+    for symbol in ("000300", "000905"):
+        try:
+            df = ak.index_stock_cons_weight_csindex(symbol=symbol)
+            for _, row in df.iterrows():
+                code = str(row["成分券代码"])
+                name_map[code] = str(row["成分券名称"])
+        except Exception as e:
+            print(f"  Warning: failed to fetch names for {symbol}: {e}")
+    return name_map
 
 
 def load_cache() -> list[dict]:
@@ -56,7 +72,7 @@ def bar(count: int, scale: int, color: str = "#17becf") -> str:
             f'<span class="dist-cnt">{count}</span></div>')
 
 
-def generate_html(records: list[dict], run_ts: str) -> str:
+def generate_html(records: list[dict], name_map: dict[str, str], run_ts: str) -> str:
     # ── stats ────────────────────────────────────────────────────────────────
     total = len(records)
     data_ok_list = [
@@ -134,7 +150,7 @@ def generate_html(records: list[dict], run_ts: str) -> str:
         row = (
             f'<tr>'
             f'<td style="font-family:monospace;font-size:12px;">{r["symbol"]}</td>'
-            f'<td>{r.get("name","")[:6]}</td>'
+            f'<td>{name_map.get(r["symbol"], "")[:6]}</td>'
             f'<td style="text-align:right;color:#17becf;">{rg:+.1f}%</td>'
             f'<td style="text-align:right;color:#3fb950;">{ng:+.1f}%</td>'
             f'<td style="text-align:center;color:{cont_color};font-size:12px;">{cont}</td>'
@@ -377,12 +393,16 @@ def add_nav_link(html: str) -> str:
 def main() -> None:
     run_ts = datetime.now(BJT).strftime("%Y-%m-%d %H:%M")
 
+    print("Fetching stock names from csindex.com.cn...")
+    name_map = load_name_map()
+    print(f"  {len(name_map)} names loaded")
+
     print(f"Loading cache: {CACHE_JSONL}")
     records = load_cache()
     print(f"  {len(records)} records loaded")
 
     print("Generating HTML section...")
-    section_html = generate_html(records, run_ts)
+    section_html = generate_html(records, name_map, run_ts)
 
     print(f"Injecting into {DOCS_PAGE}...")
     content = DOCS_PAGE.read_text(encoding="utf-8")
