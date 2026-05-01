@@ -115,14 +115,19 @@ def fetch_extra_fields(symbols: list[str], batch_size: int = 50) -> dict[str, di
 
 # ── 分析逻辑 ─────────────────────────────────────────────────────────────────
 
-def passes_gate(periods: list[dict], thresh: float, cap: float = 200.0) -> bool:
+def passes_gate(periods: list[dict], thresh: float) -> bool:
+    """营收+净利润同比均 ≥ thresh，且本期净利润 > 0（排除亏损及由亏转盈基数效应）。"""
     if not periods:
         return False
     p = periods[0]
     rg = p.get("revenue_growth")
     ng = p.get("net_profit_growth")
-    return (rg is not None and ng is not None
-            and rg >= thresh and ng >= thresh and ng <= cap)
+    np_val = p.get("net_profit")
+    if rg is None or ng is None:
+        return False
+    if np_val is not None and np_val <= 0:
+        return False
+    return rg >= thresh and ng >= thresh
 
 
 def passes_continuity(periods: list[dict], min_thresh: float, n: int) -> bool:

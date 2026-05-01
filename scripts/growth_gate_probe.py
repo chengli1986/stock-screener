@@ -155,15 +155,27 @@ def fetch_all(universe: list[dict], periods: int) -> dict[str, list[dict]]:
 
 # ── 分析逻辑 ────────────────────────────────────────────────────────────────
 
-def passes_gate(periods_data: list[dict], thresh: float, cap: float = 200.0) -> bool:
-    """最新期营收+净利润同比均 ≥ thresh，且净利润同比 ≤ cap。"""
+def passes_gate(periods_data: list[dict], thresh: float) -> bool:
+    """
+    最新期营收+净利润同比均 ≥ thresh。
+
+    旧版有 ≤200% 上限兜底（原意：过滤由亏转盈的基数效应）。
+    改为精确判断：若最新期净利润 > 0 则不设上限；
+    若最新期净利润 ≤ 0（本期亏损，增速无意义）则直接排除。
+    这样中际旭创（+262% 但本期盈利 57 亿）不再被误杀。
+    """
     if not periods_data:
         return False
     latest = periods_data[0]
     rg = latest.get("revenue_growth")
     ng = latest.get("net_profit_growth")
-    return (rg is not None and ng is not None
-            and rg >= thresh and ng >= thresh and ng <= cap)
+    np_val = latest.get("net_profit")
+    if rg is None or ng is None:
+        return False
+    # 本期亏损则排除（增速为负或分母为负时无意义）
+    if np_val is not None and np_val <= 0:
+        return False
+    return rg >= thresh and ng >= thresh
 
 
 def passes_continuity(periods_data: list[dict], min_thresh: float, n: int) -> bool:
