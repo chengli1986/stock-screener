@@ -63,7 +63,7 @@ def fetch_universe() -> list[dict]:
     return universe
 
 
-def fetch_batch(symbols: list[str], periods: int) -> dict[str, list[dict]]:
+def fetch_batch(symbols: list[str], periods: int, batch_idx: int = 0) -> dict[str, list[dict]]:
     """
     批量拉取一批股票的近N期财报数据。
     返回 {symbol: [期1数据, 期2数据, ...]} 字典。
@@ -72,6 +72,7 @@ def fetch_batch(symbols: list[str], periods: int) -> dict[str, list[dict]]:
     filter_str = f"(SECURITY_CODE in ({codes_str}))"
     page_size = len(symbols) * periods
 
+    result: dict[str, list[dict]] = {s: [] for s in symbols}
     try:
         r = requests.get(
             DC_URL,
@@ -87,12 +88,11 @@ def fetch_batch(symbols: list[str], periods: int) -> dict[str, list[dict]]:
             timeout=20,
         )
         if r.status_code != 200:
-            return {}
+            return result
         d = r.json()
         if not d.get("success") or not d.get("result"):
-            return {}
+            return result
 
-        result: dict[str, list[dict]] = {s: [] for s in symbols}
         for row in d["result"]["data"]:
             code = row.get("SECURITY_CODE", "")
             if code in result and len(result[code]) < periods:
@@ -104,8 +104,9 @@ def fetch_batch(symbols: list[str], periods: int) -> dict[str, list[dict]]:
                     "net_profit": row.get("PARENTNETPROFIT"),
                 })
         return result
-    except Exception:
-        return {}
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        print(f"[批次 {batch_idx}] 请求失败: {e}", flush=True)
+        return result
 
 
 def load_cache() -> dict[str, list[dict]]:
@@ -138,7 +139,7 @@ def fetch_all(universe: list[dict], periods: int) -> dict[str, list[dict]]:
 
     results: dict[str, list[dict]] = {}
     for i, batch in enumerate(batches, 1):
-        batch_result = fetch_batch(batch, periods)
+        batch_result = fetch_batch(batch, periods, batch_idx=i)
         ok_count = sum(1 for v in batch_result.values() if v)
         print(f"[批次 {i:2}/{len(batches)}] {len(batch)} 只 → {ok_count} 只拿到数据", flush=True)
         results.update(batch_result)
