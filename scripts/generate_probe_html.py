@@ -343,7 +343,11 @@ h3 {{ font-size:14px; font-weight:600; margin:20px 0 8px; color:var(--text); }}
 /* tables — shared */
 table {{ border-collapse:collapse; width:100%; }}
 th, td {{ padding:6px 10px; text-align:left; font-size:12.5px; border-bottom:1px solid var(--border); }}
-th {{ color:var(--text-muted); font-weight:500; white-space:nowrap; background:var(--surface); position:sticky; top:0; z-index:2; }}
+th {{ color:var(--text-muted); font-weight:500; white-space:nowrap; background:var(--surface); position:sticky; top:0; z-index:2; cursor:pointer; }}
+th .sort-icon {{ font-size:10px; opacity:0.3; margin-left:3px; user-select:none; }}
+th:hover .sort-icon {{ opacity:0.7; }}
+th.sort-active {{ color:var(--accent6); }}
+th.sort-active .sort-icon {{ opacity:1; color:var(--accent6); }}
 tr:hover td {{ background:var(--surface2); }}
 .hl-row td {{ background:#17becf0d; }}
 
@@ -362,6 +366,7 @@ tr:hover td {{ background:var(--surface2); }}
 
 /* scrollable table container */
 .table-scroll {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; }}
+.table-scroll.tall {{ max-height:75vh; overflow-y:auto; }}
 
 /* continuity mini-table */
 .cont-table td {{ border-bottom:1px solid var(--border); padding:8px 12px; }}
@@ -460,8 +465,8 @@ tr:hover td {{ background:var(--surface2); }}
   <strong>扣非净利同比</strong> = 扣除非经常性损益（橙色 = 与净利差距 &gt;20pp，净利润有一次性收益撑高）&nbsp;|&nbsp;
   2期 ✓ = 近2期营收+净利均≥15%
 </div>
-<div class="table-scroll">
-<table>
+<div class="table-scroll tall">
+<table id="stock-table">
   <thead><tr>
     <th>代码</th>
     <th>名称</th>
@@ -489,6 +494,54 @@ tr:hover td {{ background:var(--surface2); }}
 
 </div>
 <script src="/js/sync-highlight.js" defer></script>
+<script>
+(function() {{
+  var table = document.getElementById('stock-table');
+  if (!table) return;
+  var tbody = table.querySelector('tbody');
+  var ths = Array.from(table.querySelectorAll('thead th'));
+  var sortState = {{col: -1, asc: true}};
+
+  function parseVal(cell) {{
+    var t = cell.textContent.trim();
+    if (t === '—' || t === '') return null;
+    if (t === '✓') return 1;
+    var n = parseFloat(t.replace(/[+%,\\s]/g, ''));
+    if (!isNaN(n)) return n;
+    return t;
+  }}
+
+  function compare(a, b, asc) {{
+    if (a === null && b === null) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    if (typeof a === 'number' && typeof b === 'number') return asc ? a - b : b - a;
+    return asc ? String(a).localeCompare(String(b), 'zh-CN') : String(b).localeCompare(String(a), 'zh-CN');
+  }}
+
+  ths.forEach(function(th, ci) {{
+    var icon = document.createElement('span');
+    icon.className = 'sort-icon';
+    icon.textContent = '⇅';
+    th.appendChild(icon);
+    th.addEventListener('click', function() {{
+      var asc = sortState.col === ci ? !sortState.asc : true;
+      sortState = {{col: ci, asc: asc}};
+      ths.forEach(function(h) {{
+        h.querySelector('.sort-icon').textContent = '⇅';
+        h.classList.remove('sort-active');
+      }});
+      th.querySelector('.sort-icon').textContent = asc ? '▲' : '▼';
+      th.classList.add('sort-active');
+      var rows = Array.from(tbody.rows);
+      rows.sort(function(ra, rb) {{
+        return compare(parseVal(ra.cells[ci]), parseVal(rb.cells[ci]), asc);
+      }});
+      rows.forEach(function(r) {{ tbody.appendChild(r); }});
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>"""
 
