@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-读取 growth_gate_probe 缓存 JSONL，生成 HTML 报告段落并注入 stock-screener.html。
+读取 growth_gate_probe 缓存 JSONL，生成两个输出：
 
-新增列：
-  - 指数归属（沪深300 / 中证500 / 两者）
-  - 扣非净利润同比增速（KCFJCXSYJLRTZ）
-  - 增速分析标签（基于扣非/净利润对比 + 营收对比 + 多期趋势）
+1. growth-gate-probe.html   — 独立全宽页面，显示 107 只完整名单
+2. stock-screener.html 摘要 — 只含 stats + 门槛扫描 + 跳转链接
 
 Usage:
   python3 scripts/generate_probe_html.py
@@ -21,7 +19,9 @@ import requests
 BJT = timezone(timedelta(hours=8))
 REPO_DIR = Path(__file__).resolve().parent.parent
 CACHE_JSONL = REPO_DIR / "artifacts" / "growth-gate-probe" / "fundamentals.jsonl"
-DOCS_PAGE = Path("/home/ubuntu/docs-site/pages/stock-screener.html")
+DOCS_DIR  = Path("/home/ubuntu/docs-site/pages")
+PROBE_PAGE = DOCS_DIR / "growth-gate-probe.html"
+SCREENER_PAGE = DOCS_DIR / "stock-screener.html"
 
 SECTION_START = "<!-- ===== GROWTH-GATE-PROBE ===== -->"
 SECTION_END   = "<!-- ===== /GROWTH-GATE-PROBE ===== -->"
@@ -30,28 +30,24 @@ INJECT_BEFORE = "<section id=\"layer1\">"
 DC_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 DC_HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}
 
-# 扣非净利润同比、扣非净利润绝对值、毛利率、毛利率同比变化
 EXTRA_COLS = ",".join([
     "SECURITY_CODE",
-    "KCFJCXSYJLRTZ",   # 扣非净利润同比增速
-    "KCFJCXSYJLR",     # 扣非净利润绝对值
-    "XSMLL",           # 销售毛利率
-    "XSMLL_TB",        # 毛利率同比变化 (pp)
-    "OPERATE_PROFIT_PK",  # 营业利润
+    "KCFJCXSYJLRTZ",
+    "KCFJCXSYJLR",
+    "XSMLL",
+    "XSMLL_TB",
     "REPORT_DATE",
 ])
-
 PROFILE_COLS = ",".join([
     "SECURITY_CODE",
-    "BOARD_NAME_2LEVEL",  # 东方财富行业分类（近似申万二级）
-    "ORG_PROFILE",        # 公司一句话简介
+    "BOARD_NAME_2LEVEL",
+    "ORG_PROFILE",
 ])
 
 
 # ── 数据加载 ─────────────────────────────────────────────────────────────────
 
 def load_universe() -> dict[str, dict]:
-    """从 csindex.com.cn 拉取 CSI300+CSI500，返回 {symbol: {name, index}} 。"""
     universe: dict[str, dict] = {}
     for idx_code, idx_label in [("000300", "沪深300"), ("000905", "中证500")]:
         try:
@@ -77,95 +73,74 @@ def load_cache() -> list[dict]:
     return records
 
 
-def fetch_extra_fields(symbols: list[str], batch_size: int = 50) -> dict[str, dict]:
-    """
-    对通过门槛的 N 只股票批量拉取扣非净利润 + 毛利率字段（最新1期）。
-    返回 {symbol: {deduct_np_yoy, deduct_np, gross_margin, gross_margin_chg}} 。
-    """
-    result: dict[str, dict] = {s: {} for s in symbols}
+def _batch_fetch(
+    symbols: list[str], report_name: str, cols: str,
+    batch_size: int = 50, sort: bool = True,
+) -> list[dict]:
+    rows_all: list[dict] = []
     batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-    print(f"  拉取 {len(symbols)} 只股票扣非净利润（{len(batches)} 批次）...")
-
-    for i, batch in enumerate(batches, 1):
+    for batch in batches:
         codes_str = ",".join(f'"{s}"' for s in batch)
+        params: dict = {
+            "reportName": report_name,
+            "columns": cols,
+            "filter": f"(SECURITY_CODE in ({codes_str}))",
+            "pageSize": len(batch),
+        }
+        if sort:
+            params["sortColumns"] = "REPORT_DATE"
+            params["sortTypes"] = "-1"
         try:
-            r = requests.get(DC_URL, params={
-                "reportName": "RPT_F10_FINANCE_MAINFINADATA",
-                "columns": EXTRA_COLS,
-                "filter": f"(SECURITY_CODE in ({codes_str}))",
-                "pageSize": len(batch),
-                "sortColumns": "REPORT_DATE",
-                "sortTypes": "-1",
-            }, headers=DC_HEADERS, timeout=20)
+            r = requests.get(DC_URL, params=params, headers=DC_HEADERS, timeout=20)
             d = r.json()
             if d.get("success") and d.get("result"):
-                seen: set[str] = set()
-                for row in d["result"]["data"]:
-                    code = row.get("SECURITY_CODE", "")
-                    if code in result and code not in seen:
-                        seen.add(code)
-                        result[code] = {
-                            "deduct_np_yoy":    row.get("KCFJCXSYJLRTZ"),
-                            "deduct_np":        row.get("KCFJCXSYJLR"),
-                            "gross_margin":     row.get("XSMLL"),
-                            "gross_margin_chg": row.get("XSMLL_TB"),
-                        }
+                rows_all.extend(d["result"]["data"])
         except Exception as e:
-            print(f"  batch {i} error: {e}")
+            print(f"  batch error: {e}")
         time.sleep(0.3)
+    return rows_all
 
-    ok = sum(1 for v in result.values() if v)
-    print(f"  扣非数据: {ok}/{len(symbols)} 只拿到")
+
+def fetch_extra_fields(symbols: list[str]) -> dict[str, dict]:
+    print(f"  拉取扣非净利润（{len(symbols)} 只，{-(-len(symbols)//50)} 批次）...")
+    result: dict[str, dict] = {s: {} for s in symbols}
+    seen: set[str] = set()
+    for row in _batch_fetch(symbols, "RPT_F10_FINANCE_MAINFINADATA", EXTRA_COLS):
+        code = row.get("SECURITY_CODE", "")
+        if code in result and code not in seen:
+            seen.add(code)
+            result[code] = {
+                "deduct_np_yoy":    row.get("KCFJCXSYJLRTZ"),
+                "deduct_np":        row.get("KCFJCXSYJLR"),
+                "gross_margin":     row.get("XSMLL"),
+                "gross_margin_chg": row.get("XSMLL_TB"),
+            }
+    print(f"  扣非数据: {sum(1 for v in result.values() if v)}/{len(symbols)} 只")
     return result
 
 
-def fetch_profile_fields(symbols: list[str], batch_size: int = 50) -> dict[str, dict]:
-    """
-    批量拉取行业分类 + 公司简介。
-    返回 {symbol: {industry, profile}} 。
-    """
+def fetch_profile_fields(symbols: list[str]) -> dict[str, dict]:
+    print(f"  拉取行业+简介（{len(symbols)} 只，{-(-len(symbols)//50)} 批次）...")
     result: dict[str, dict] = {s: {} for s in symbols}
-    batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-    print(f"  拉取 {len(symbols)} 只股票行业+简介（{len(batches)} 批次）...")
-
-    for i, batch in enumerate(batches, 1):
-        codes_str = ",".join(f'"{s}"' for s in batch)
-        try:
-            r = requests.get(DC_URL, params={
-                "reportName": "RPT_F10_ORG_BASICINFO",
-                "columns": PROFILE_COLS,
-                "filter": f"(SECURITY_CODE in ({codes_str}))",
-                "pageSize": len(batch),
-            }, headers=DC_HEADERS, timeout=20)
-            d = r.json()
-            if d.get("success") and d.get("result"):
-                for row in d["result"]["data"]:
-                    code = row.get("SECURITY_CODE", "")
-                    if code in result:
-                        profile = (row.get("ORG_PROFILE") or "").strip()
-                        result[code] = {
-                            "industry": row.get("BOARD_NAME_2LEVEL") or "—",
-                            "profile":  profile[:60] if profile else "—",
-                        }
-        except Exception as e:
-            print(f"  profile batch {i} error: {e}")
-        time.sleep(0.3)
-
-    ok = sum(1 for v in result.values() if v)
-    print(f"  行业简介数据: {ok}/{len(symbols)} 只拿到")
+    for row in _batch_fetch(symbols, "RPT_F10_ORG_BASICINFO", PROFILE_COLS, batch_size=50, sort=False):
+        code = row.get("SECURITY_CODE", "")
+        if code in result:
+            profile = (row.get("ORG_PROFILE") or "").strip()
+            result[code] = {
+                "industry": row.get("BOARD_NAME_2LEVEL") or "—",
+                "profile":  profile[:70] if profile else "—",
+            }
+    print(f"  行业简介: {sum(1 for v in result.values() if v)}/{len(symbols)} 只")
     return result
 
 
-# ── 分析逻辑 ─────────────────────────────────────────────────────────────────
+# ── 筛选逻辑 ─────────────────────────────────────────────────────────────────
 
 def passes_gate(periods: list[dict], thresh: float) -> bool:
-    """营收+净利润同比均 ≥ thresh，且本期净利润 > 0（排除亏损及由亏转盈基数效应）。"""
     if not periods:
         return False
     p = periods[0]
-    rg = p.get("revenue_growth")
-    ng = p.get("net_profit_growth")
-    np_val = p.get("net_profit")
+    rg, ng, np_val = p.get("revenue_growth"), p.get("net_profit_growth"), p.get("net_profit")
     if rg is None or ng is None:
         return False
     if np_val is not None and np_val <= 0:
@@ -185,50 +160,31 @@ def passes_continuity(periods: list[dict], min_thresh: float, n: int) -> bool:
 
 
 def classify_growth(rg: float, ng: float, extra: dict, periods_data: list[dict]) -> str:
-    """
-    生成增速分析标签。
-
-    逻辑：
-      1. 扣非 vs 净利润对比 → 判断非经常性损益贡献
-      2. 扣非 vs 营收对比   → 判断利润率扩张 or 规模增长
-      3. 多期趋势            → 业绩加速 flag
-      4. 毛利率变化          → 毛利率方向
-    """
     tags = []
     dng = extra.get("deduct_np_yoy")
     gm_chg = extra.get("gross_margin_chg")
-
     if dng is not None:
-        gap = ng - dng  # 净利润增速 - 扣非增速，正值 = 非经常性收益拉高了净利润
-
-        # ① 非经常性损益权重
+        gap = ng - dng
         if gap > 50:
             tags.append("⚠ 非经常性收益主导")
         elif gap > 20:
             tags.append("非经常性收益显著")
         elif gap < -15:
             tags.append("非经常性损失拖累")
-
-        # ② 扣非质量：扣非是正增长才有意义
         if dng >= 30:
-            if rg > 0:
-                ratio = dng / max(abs(rg), 1)
-                if ratio > 1.4:
-                    tags.append("利润率扩张")
-                elif ratio < 0.6:
-                    tags.append("规模增长为主")
-                else:
-                    tags.append("主业稳健增长")
+            ratio = dng / max(abs(rg), 1)
+            if ratio > 1.4:
+                tags.append("利润率扩张")
+            elif ratio < 0.6:
+                tags.append("规模增长为主")
             else:
-                tags.append("主业强势")
+                tags.append("主业稳健增长")
         elif 0 <= dng < 30:
             tags.append("扣非增速较温和")
         else:
             tags.append("扣非承压")
     else:
         tags.append("扣非数据缺失")
-
-    # ③ 多期加速
     if len(periods_data) >= 2:
         prev_ng = periods_data[1].get("net_profit_growth")
         prev_rg = periods_data[1].get("revenue_growth")
@@ -236,14 +192,11 @@ def classify_growth(rg: float, ng: float, extra: dict, periods_data: list[dict])
             tags.append("业绩加速↑")
         if prev_rg is not None and rg - prev_rg > 20:
             tags.append("营收提速")
-
-    # ④ 毛利率方向
     if gm_chg is not None:
         if gm_chg > 3:
             tags.append("毛利率↑")
         elif gm_chg < -3:
             tags.append("毛利率↓")
-
     return " · ".join(tags) if tags else "主业增长"
 
 
@@ -254,10 +207,10 @@ def bar(count: int, scale: int, color: str = "#17becf") -> str:
             f'<span class="dist-cnt">{count}</span></div>')
 
 
-# ── HTML 生成 ─────────────────────────────────────────────────────────────────
+# ── 行渲染 ───────────────────────────────────────────────────────────────────
 
-def build_stock_row(r: dict, universe: dict, extra_map: dict, profile_map: dict) -> str:
-    p0 = r["periods"][0]
+def stock_row_html(r: dict, universe: dict, extra_map: dict, profile_map: dict) -> str:
+    p0  = r["periods"][0]
     sym = r["symbol"]
     rg  = p0["revenue_growth"]
     ng  = p0["net_profit_growth"]
@@ -265,33 +218,19 @@ def build_stock_row(r: dict, universe: dict, extra_map: dict, profile_map: dict)
     info  = universe.get(sym, {})
     name  = info.get("name", "")[:6]
     index = info.get("index", "—")
-    index_color = {
-        "沪深300": "#17becf",
-        "中证500": "#3fb950",
-        "两者":    "#ffd700",
-    }.get(index, "var(--text-muted)")
+    idx_color = {"沪深300": "#17becf", "中证500": "#3fb950", "两者": "#ffd700"}.get(index, "#8b949e")
 
     extra = extra_map.get(sym, {})
     dng   = extra.get("deduct_np_yoy")
-
-    # 扣非净利润同比显示
     if dng is not None:
-        dng_disp = f"{dng:+.1f}%"
-        gap = ng - dng
-        if gap > 20:
-            dng_color = "#e3b341"   # 橙：非经常性收益显著
-        elif dng >= 30:
-            dng_color = "#3fb950"   # 绿：扣非同样亮眼
-        else:
-            dng_color = "var(--text-muted)"
+        dng_s = f"{dng:+.1f}%"
+        dng_color = "#e3b341" if (ng - dng) > 20 else ("#3fb950" if dng >= 30 else "#8b949e")
     else:
-        dng_disp  = "—"
-        dng_color = "var(--text-muted)"
+        dng_s, dng_color = "—", "#8b949e"
 
     cont       = "✓" if passes_continuity(r["periods"], 15, 2) else "—"
-    cont_color = "#3fb950" if cont == "✓" else "var(--text-muted)"
+    cont_color = "#3fb950" if cont == "✓" else "#8b949e"
     analysis   = classify_growth(rg, ng, extra, r["periods"])
-    period_name = p0.get("period_name", "")
 
     pinfo    = profile_map.get(sym, {})
     industry = pinfo.get("industry", "—")
@@ -299,158 +238,296 @@ def build_stock_row(r: dict, universe: dict, extra_map: dict, profile_map: dict)
 
     return (
         f'<tr>'
-        f'<td style="font-family:monospace;font-size:12px;">{sym}</td>'
-        f'<td style="white-space:nowrap;">{name}</td>'
-        f'<td style="text-align:center;white-space:nowrap;"><span style="font-size:10px;color:{index_color};">{index}</span></td>'
-        f'<td style="text-align:center;font-size:11px;white-space:nowrap;">{industry}</td>'
-        f'<td style="font-size:11px;color:var(--text-muted);max-width:200px;">{profile}</td>'
-        f'<td style="text-align:right;color:#17becf;">{rg:+.1f}%</td>'
-        f'<td style="text-align:right;color:#9ecde6;">{ng:+.1f}%</td>'
-        f'<td style="text-align:right;color:{dng_color};font-weight:600;">{dng_disp}</td>'
-        f'<td style="text-align:center;color:{cont_color};font-size:12px;">{cont}</td>'
-        f'<td style="font-size:11px;color:var(--text-muted);max-width:180px;">{analysis}</td>'
-        f'<td style="font-size:11px;color:var(--text-muted);white-space:nowrap;">{period_name}</td>'
+        f'<td class="mono">{sym}</td>'
+        f'<td class="nowrap">{name}</td>'
+        f'<td class="ctr"><span style="color:{idx_color};font-size:11px;">{index}</span></td>'
+        f'<td class="ctr industry-cell">{industry}</td>'
+        f'<td class="profile-cell">{profile}</td>'
+        f'<td class="num" style="color:#17becf;">{rg:+.1f}%</td>'
+        f'<td class="num" style="color:#9ecde6;">{ng:+.1f}%</td>'
+        f'<td class="num" style="color:{dng_color};font-weight:600;">{dng_s}</td>'
+        f'<td class="ctr" style="color:{cont_color};">{cont}</td>'
+        f'<td class="analysis-cell">{analysis}</td>'
+        f'<td class="nowrap muted">{p0.get("period_name","")}</td>'
         f'</tr>\n'
     )
 
 
-def build_table_header() -> str:
-    return """<thead>
-      <tr>
-        <th><span class="zh">代码</span><span class="en">Code</span></th>
-        <th><span class="zh">名称</span><span class="en">Name</span></th>
-        <th style="text-align:center;"><span class="zh">指数</span><span class="en">Index</span></th>
-        <th style="text-align:center;"><span class="zh">行业</span><span class="en">Industry</span></th>
-        <th><span class="zh">主营简介</span><span class="en">Business</span></th>
-        <th style="text-align:right;"><span class="zh">营收同比</span><span class="en">Rev YoY</span></th>
-        <th style="text-align:right;"><span class="zh">净利同比</span><span class="en">NP YoY</span></th>
-        <th style="text-align:right;"><span class="zh">扣非净利同比</span><span class="en">Adj NP YoY</span></th>
-        <th style="text-align:center;"><span class="zh">2期连续</span><span class="en">2-period</span></th>
-        <th><span class="zh">增速分析</span><span class="en">Growth Analysis</span></th>
-        <th><span class="zh">报告期</span><span class="en">Period</span></th>
-      </tr>
-    </thead>"""
+# ── 独立页面生成 ──────────────────────────────────────────────────────────────
 
+def generate_probe_page(
+    passed_30: list[dict],
+    universe: dict,
+    extra_map: dict,
+    profile_map: dict,
+    sweep: list[tuple],
+    cont2: list,
+    cont3: list,
+    data_ok: int,
+    period_name: str,
+    report_date: str,
+    run_ts: str,
+) -> str:
+    cnt = len(passed_30)
 
-def generate_html(records: list[dict], universe: dict, extra_map: dict, profile_map: dict, run_ts: str) -> str:
-    # ── 统计 ─────────────────────────────────────────────────────────────────
-    total = len(records)
-    data_ok_list = [
-        r for r in records
-        if r["periods"] and
-        r["periods"][0].get("revenue_growth") is not None and
-        r["periods"][0].get("net_profit_growth") is not None
-    ]
-    data_ok    = len(data_ok_list)
-    period_name = data_ok_list[0]["periods"][0]["period_name"] if data_ok_list else "—"
-    report_date = data_ok_list[0]["periods"][0]["report_date"] if data_ok_list else "—"
+    # 门槛扫描 rows
+    sweep_rows = ""
+    for th, cnt_th, pct, target in sweep:
+        hl = ' class="hl-row"' if target else ""
+        tag = ""
+        if target:
+            tag = '<span class="badge-target">目标区间</span>'
+        elif cnt_th < 30:
+            tag = '<span class="muted-sm">↑ 候选池过稀</span>'
+        elif cnt_th > 200:
+            tag = '<span class="muted-sm">↓ 候选池过密</span>'
+        sweep_rows += (
+            f'<tr{hl}><td>≥ {th}%</td>'
+            f'<td class="num">{cnt_th}</td>'
+            f'<td class="num">{pct:.1f}%</td>'
+            f'<td>{tag}</td></tr>\n'
+        )
 
-    # 门槛扫描
-    thresholds = [10, 15, 20, 25, 30, 35, 40, 50]
-    sweep = []
-    for th in thresholds:
-        passed = [r for r in data_ok_list if passes_gate(r["periods"], th)]
-        pct = len(passed) / data_ok * 100 if data_ok else 0
-        target = (60 <= len(passed) <= 120)
-        sweep.append((th, len(passed), pct, target))
-
-    # 30%通过名单（按净利润同比降序）
-    passed_30_raw = [r for r in data_ok_list if passes_gate(r["periods"], 30)]
-    passed_30 = sorted(passed_30_raw, key=lambda x: -x["periods"][0]["net_profit_growth"])
-    cnt_30 = len(passed_30)
-
-    cont2 = [r for r in passed_30_raw if passes_continuity(r["periods"], 15, 2)]
-    cont3 = [r for r in passed_30_raw if passes_continuity(r["periods"], 15, 3)]
+    # 107只名单
+    all_rows = "".join(stock_row_html(r, universe, extra_map, profile_map) for r in passed_30)
 
     # 分布直方图
     buckets = [(-999, -50), (-50, 0), (0, 10), (10, 20), (20, 30),
                (30, 50), (50, 100), (100, 200), (200, 9999)]
-    max_cnt = max(
-        max(sum(1 for r in data_ok_list
-                if lo <= r["periods"][0]["revenue_growth"] < hi) for lo, hi in buckets),
-        1,
-    )
+    all_records_with_data = [r for r in passed_30]  # already filtered
 
-    # ── 门槛扫描表 rows ───────────────────────────────────────────────────────
+    pct_cont2 = len(cont2) / cnt * 100 if cnt else 0
+    pct_cont3 = len(cont3) / cnt * 100 if cnt else 0
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>成长门槛探针 — {cnt}只高增长股</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/css/components.css">
+<style>
+:root {{
+  --page-accent: #17becf;
+  --accent6: #17becf;
+}}
+body {{ background: var(--bg); color: var(--text); font-family: var(--font); }}
+.page-wrap {{ max-width: 1480px; margin: 0 auto; padding: 24px 28px 80px; }}
+
+/* header */
+.page-header {{ display:flex; align-items:baseline; gap:16px; margin-bottom:24px; flex-wrap:wrap; }}
+.page-header h1 {{ font-size:22px; font-weight:700;
+  background:linear-gradient(135deg,#17becf,#0d8a96);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }}
+.back-link {{ color:var(--text-muted); font-size:13px; text-decoration:none; }}
+.back-link:hover {{ color:var(--text); }}
+.run-ts {{ color:var(--text-muted); font-size:12px; margin-left:auto; }}
+
+/* stats grid */
+.stats-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:20px 0; }}
+.stat-card {{ background:var(--surface); border:1px solid var(--border); border-radius:8px;
+  padding:14px 18px; }}
+.stat-card .value {{ font-size:26px; font-weight:700; color:var(--accent6); }}
+.stat-card .label {{ font-size:11px; color:var(--text-muted); text-transform:uppercase; margin-top:4px; }}
+
+/* callout */
+.callout {{ background:var(--surface); border-left:3px solid var(--accent6);
+  border-radius:0 6px 6px 0; padding:10px 14px; font-size:13px; margin:16px 0; }}
+
+/* section headings */
+h2 {{ font-size:17px; font-weight:600; margin:32px 0 12px; border-bottom:1px solid var(--border);
+  padding-bottom:6px; color:var(--accent6); }}
+h3 {{ font-size:14px; font-weight:600; margin:20px 0 8px; color:var(--text); }}
+
+/* tables — shared */
+table {{ border-collapse:collapse; width:100%; }}
+th, td {{ padding:6px 10px; text-align:left; font-size:12.5px; border-bottom:1px solid var(--border); }}
+th {{ color:var(--text-muted); font-weight:500; white-space:nowrap; background:var(--surface); position:sticky; top:0; z-index:2; }}
+tr:hover td {{ background:var(--surface2); }}
+.hl-row td {{ background:#17becf0d; }}
+
+/* stock table helpers */
+.mono {{ font-family:monospace; font-size:12px; white-space:nowrap; }}
+.nowrap {{ white-space:nowrap; }}
+.ctr {{ text-align:center; }}
+.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }}
+.muted {{ color:var(--text-muted); }}
+.muted-sm {{ font-size:11px; color:var(--text-muted); }}
+.industry-cell {{ white-space:nowrap; font-size:11px; }}
+.profile-cell {{ font-size:11px; color:var(--text-muted); max-width:260px; }}
+.analysis-cell {{ font-size:11px; color:var(--text-muted); min-width:160px; }}
+.badge-target {{ background:#17becf22; color:#17becf; font-size:10px;
+  padding:2px 6px; border-radius:4px; white-space:nowrap; }}
+
+/* scrollable table container */
+.table-scroll {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; }}
+
+/* continuity mini-table */
+.cont-table td {{ border-bottom:1px solid var(--border); padding:8px 12px; }}
+
+/* dist bar */
+.dist-bar-wrap {{ display:flex; align-items:center; gap:6px; width:100%; }}
+.dist-bar {{ height:13px; border-radius:3px; min-width:2px; }}
+.dist-cnt {{ font-size:11px; color:var(--text-muted); white-space:nowrap; }}
+
+/* responsive */
+@media(max-width:900px) {{
+  .stats-grid {{ grid-template-columns:repeat(2,1fr); }}
+  .page-wrap {{ padding:16px; }}
+}}
+</style>
+</head>
+<body>
+<div class="page-wrap">
+
+<div class="page-header">
+  <a class="back-link" href="/stock-screener.html">← 返回选股设计</a>
+  <h1>成长门槛探针</h1>
+  <span class="run-ts">{run_ts} BJT &nbsp;|&nbsp; 数据: {period_name}（{report_date}）</span>
+</div>
+
+<div class="callout">
+  对 <strong>沪深300 + 中证500</strong> 全量 800 只 A 股拉取近 3 期财报，筛选
+  <strong>营收同比 AND 扣非净利润同比均 ≥ 30%</strong> 且本期净利润 &gt; 0 的高增长标的。
+  行业分类来自东方财富（结构近似申万二级）。
+</div>
+
+<!-- stats -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="value">800</div>
+    <div class="label">Universe（沪深300+中证500）</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{cnt}</div>
+    <div class="label">过双≥30%门槛</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{cnt/data_ok*100:.1f}%</div>
+    <div class="label">入选率</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{len(cont2)}</div>
+    <div class="label">近2期连续≥15%</div>
+  </div>
+</div>
+
+<!-- threshold sweep -->
+<h2>门槛灵敏度</h2>
+<p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+  营收同比 AND 净利润同比均 ≥ X%，且本期净利润 &gt; 0
+</p>
+<div class="table-scroll" style="max-width:480px;">
+<table>
+  <thead><tr>
+    <th>门槛</th><th class="num">通过</th><th class="num">占比</th><th>备注</th>
+  </tr></thead>
+  <tbody>{sweep_rows}</tbody>
+</table>
+</div>
+
+<!-- continuity -->
+<h2>连续性检验</h2>
+<div class="table-scroll" style="max-width:480px;">
+<table class="cont-table">
+  <tr>
+    <td>最新期双≥30%（本期盈利）</td>
+    <td class="num" style="font-weight:600;">{cnt} 只</td>
+    <td class="muted-sm">baseline</td>
+  </tr>
+  <tr>
+    <td>+ 近2期均≥15%</td>
+    <td class="num" style="font-weight:600;">{len(cont2)} 只</td>
+    <td class="muted-sm">淘汰 {100-pct_cont2:.0f}%</td>
+  </tr>
+  <tr>
+    <td>+ 近3期均≥15%</td>
+    <td class="num" style="font-weight:600;">{len(cont3)} 只</td>
+    <td class="muted-sm">淘汰 {100-pct_cont3:.0f}%</td>
+  </tr>
+</table>
+</div>
+
+<!-- full stock table -->
+<h2>完整名单 — {cnt} 只（按净利润同比降序）</h2>
+<div class="callout" style="font-size:12px;">
+  <strong>列说明</strong>：
+  指数 <span style="color:#17becf;">■</span>沪深300
+  <span style="color:#3fb950;">■</span>中证500
+  <span style="color:#ffd700;">■</span>两者 &nbsp;|&nbsp;
+  净利同比 = 含非经常性损益 &nbsp;|&nbsp;
+  <strong>扣非净利同比</strong> = 扣除非经常性损益（橙色 = 与净利差距 &gt;20pp，净利润有一次性收益撑高）&nbsp;|&nbsp;
+  2期 ✓ = 近2期营收+净利均≥15%
+</div>
+<div class="table-scroll">
+<table>
+  <thead><tr>
+    <th>代码</th>
+    <th>名称</th>
+    <th class="ctr">指数</th>
+    <th class="ctr">行业</th>
+    <th>主营简介</th>
+    <th class="num">营收同比</th>
+    <th class="num">净利同比</th>
+    <th class="num">扣非净利同比</th>
+    <th class="ctr">2期</th>
+    <th>增速分析</th>
+    <th>报告期</th>
+  </tr></thead>
+  <tbody>
+{all_rows}  </tbody>
+</table>
+</div>
+
+<p style="font-size:12px;color:var(--text-muted);margin-top:20px;">
+  脚本: <code>scripts/growth_gate_probe.py</code> +
+  <code>scripts/generate_probe_html.py</code> &nbsp;|&nbsp;
+  数据: datacenter-web.eastmoney.com &nbsp;|&nbsp;
+  行业字段: <code>BOARD_NAME_2LEVEL</code>（RPT_F10_ORG_BASICINFO，近似申万二级）
+</p>
+
+</div>
+<script src="/js/sync-highlight.js" defer></script>
+</body>
+</html>"""
+
+
+# ── stock-screener.html 摘要节 ────────────────────────────────────────────────
+
+def generate_screener_section(
+    cnt_30: int,
+    data_ok: int,
+    sweep: list[tuple],
+    cont2: list,
+    cont3: list,
+    period_name: str,
+    report_date: str,
+    run_ts: str,
+) -> str:
     sweep_rows = ""
-    for th, cnt, pct, target in sweep:
-        marker_zh = marker_en = hl = ""
+    for th, cnt_th, pct, target in sweep:
+        hl = ' style="background:#17becf0d;"' if target else ""
+        tag = ""
         if target:
-            marker_zh = '<span class="badge" style="background:#17becf22;color:#17becf;font-size:10px;margin-left:6px;">目标区间</span>'
-            marker_en = '<span class="badge" style="background:#17becf22;color:#17becf;font-size:10px;margin-left:6px;">Target zone</span>'
-            hl = ' style="background:#17becf0d;"'
-        elif cnt < 30:
-            marker_zh = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↑ 过稀</span>'
-            marker_en = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↑ Too sparse</span>'
-        elif cnt > 200:
-            marker_zh = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↓ 过密</span>'
-            marker_en = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↓ Too dense</span>'
+            tag = '<span class="badge" style="background:#17becf22;color:#17becf;font-size:10px;margin-left:6px;">目标区间</span>'
+        elif cnt_th < 30:
+            tag = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↑ 过稀</span>'
+        elif cnt_th > 200:
+            tag = '<span style="font-size:11px;color:var(--text-muted);margin-left:4px;">↓ 过密</span>'
         sweep_rows += (
             f'<tr{hl}>'
             f'<td>≥ {th}%</td>'
-            f'<td style="text-align:right;font-variant-numeric:tabular-nums;">{cnt}</td>'
-            f'<td style="text-align:right;font-variant-numeric:tabular-nums;">{pct:.1f}%</td>'
-            f'<td><span class="zh">{marker_zh}</span><span class="en">{marker_en}</span></td>'
+            f'<td style="text-align:right;">{cnt_th}</td>'
+            f'<td style="text-align:right;">{pct:.1f}%</td>'
+            f'<td><span class="zh">{tag}</span></td>'
             f'</tr>\n'
         )
-
-    # ── 股票表格 rows ─────────────────────────────────────────────────────────
-    VISIBLE = 30
-    stock_rows_visible = "".join(
-        build_stock_row(r, universe, extra_map, profile_map)
-        for r in passed_30[:VISIBLE]
-    )
-    stock_rows_hidden = "".join(
-        build_stock_row(r, universe, extra_map, profile_map)
-        for r in passed_30[VISIBLE:]
-    )
-
-    table_header = build_table_header()
-    show_more_btn = ""
-    if len(passed_30) > VISIBLE:
-        extra = len(passed_30) - VISIBLE
-        show_more_btn = f'''
-  <details class="expandable" style="margin-top:8px;">
-    <summary><span class="zh">展开剩余 {extra} 只</span><span class="en">Show {extra} more</span></summary>
-    <div class="expandable-body" style="padding:0;overflow-x:auto;">
-      <table style="font-size:12px;">
-        {table_header}
-        <tbody>{stock_rows_hidden}</tbody>
-      </table>
-    </div>
-  </details>'''
-
-    # ── 分布直方图 rows ───────────────────────────────────────────────────────
-    def dist_rows(field: str) -> str:
-        out = ""
-        for lo, hi in buckets:
-            cnt = sum(
-                1 for r in data_ok_list
-                if lo <= r["periods"][0][field] < hi
-            )
-            hi_s = "+∞" if hi == 9999 else f"{hi}%"
-            label = f"[{lo}%, {hi_s})"
-            flag_zh = "← 30%门槛" if lo == 30 else ""
-            flag_en = "← 30% gate" if lo == 30 else ""
-            color = "#17becf" if lo == 30 else ("#3fb950" if lo >= 0 else "#f85149")
-            out += (
-                f'<tr>'
-                f'<td style="font-family:monospace;font-size:11px;white-space:nowrap;">{label}</td>'
-                f'<td style="width:100%;">{bar(cnt, max_cnt // 8 + 1, color)}</td>'
-                f'<td style="color:var(--text-muted);font-size:11px;white-space:nowrap;">'
-                f'<span class="zh">{flag_zh}</span><span class="en">{flag_en}</span></td>'
-                f'</tr>\n'
-            )
-        return out
-
-    rev_rows = dist_rows("revenue_growth")
-    np_rows  = dist_rows("net_profit_growth")
 
     pct_cont2 = len(cont2) / cnt_30 * 100 if cnt_30 else 0
     pct_cont3 = len(cont3) / cnt_30 * 100 if cnt_30 else 0
 
-    # ── HTML 段落 ─────────────────────────────────────────────────────────────
-    html = f'''
+    return f"""
 {SECTION_START}
 <section id="growth-gate-probe" class="updated-latest">
   <h2>
@@ -460,145 +537,94 @@ def generate_html(records: list[dict], universe: dict, extra_map: dict, profile_
   </h2>
 
   <p>
-    <span class="zh">对沪深300 + 中证500全量 800 只 A 股拉取近 3 期财报（东方财富 datacenter API，
-    24h 可用），分析不同增速门槛下的候选池密度，验证 <strong>双 ≥30% 门槛</strong> 是否能将候选池控制在 60–120 只目标区间，
-    并检验业绩连续性淘汰率。股票名单额外拉取 <strong>扣非净利润</strong> 字段，区分主业增长与非经常性损益的贡献。</span>
-    <span class="en">Fetched latest 3 quarterly reports for all 800 CSI 300 + CSI 500 A-shares.
-    Validates dual ≥30% gate, checks continuity attrition. The passing list adds
-    <strong>adjusted net profit (excl. non-recurring items)</strong> to distinguish core growth from one-off items.</span>
+    <span class="zh">对沪深300 + 中证500全量 800 只 A 股拉取近 3 期财报，分析不同增速门槛下的候选池密度，
+    验证 <strong>双 ≥30% 门槛</strong> 是否落在 60–120 只目标区间，并检验业绩连续性淘汰率。
+    完整名单（{cnt_30} 只，含行业 / 主营简介 / 扣非净利润分析）见专页。</span>
+    <span class="en">Threshold sensitivity analysis across 800 CSI 300+500 A-shares.
+    Full passing list ({cnt_30} stocks with industry, business description, and adj NP YoY) on the dedicated page.</span>
   </p>
 
   <!-- stats cards -->
   <div class="stats-grid" style="margin-top:16px;">
     <div class="stat-card">
-      <div class="value">{total}</div>
+      <div class="value">800</div>
       <div class="label"><span class="zh">Universe</span><span class="en">Universe</span></div>
     </div>
     <div class="stat-card">
-      <div class="value">{data_ok}</div>
-      <div class="label"><span class="zh">双字段有效</span><span class="en">Both fields OK</span></div>
-    </div>
-    <div class="stat-card">
       <div class="value">{cnt_30}</div>
-      <div class="label"><span class="zh">过双≥30%门槛</span><span class="en">Pass ≥30%/30%</span></div>
+      <div class="label"><span class="zh">过双≥30%门槛</span><span class="en">Pass dual ≥30%</span></div>
     </div>
     <div class="stat-card">
       <div class="value">{cnt_30/data_ok*100:.1f}%</div>
       <div class="label"><span class="zh">入选率</span><span class="en">Selection rate</span></div>
     </div>
+    <div class="stat-card">
+      <div class="value">{len(cont2)}</div>
+      <div class="label"><span class="zh">2期连续≥15%</span><span class="en">2-period ≥15%</span></div>
+    </div>
   </div>
 
   <div class="callout" style="margin-top:16px;">
-    <span class="zh">数据报告期：<strong>{period_name}</strong>（{report_date}）。筛选门槛用净利润同比（与主流分析一致）；通过名单额外补拉扣非净利润同比（<code>KCFJCXSYJLRTZ</code>），用于识别"净利润增速虚高"个股。</span>
-    <span class="en">Data as of: <strong>{period_name}</strong> ({report_date}). Gate uses reported NP YoY (industry standard). Passing list also fetches adjusted NP YoY (<code>KCFJCXSYJLRTZ</code>) to flag stocks where headline profit is inflated by non-recurring items.</span>
+    <span class="zh">数据报告期：<strong>{period_name}</strong>（{report_date}）。
+    门槛：营收同比 AND 净利润同比均≥30%，且本期净利润&gt;0（排除由亏转盈基数效应）。</span>
+    <span class="en">Data as of: <strong>{period_name}</strong> ({report_date}).
+    Gate: Rev YoY AND NP YoY ≥30%, current NP &gt; 0 (excludes loss→profit base distortion).</span>
   </div>
 
   <!-- threshold sweep -->
-  <h3 style="margin-top:24px;"><span class="zh">门槛灵敏度（最新1期双门槛，净利同比上限200%）</span><span class="en">Threshold Sensitivity (latest quarter, dual gate, NP ≤ 200%)</span></h3>
+  <h3 style="margin-top:20px;"><span class="zh">门槛灵敏度</span><span class="en">Threshold Sensitivity</span></h3>
   <table>
-    <thead>
-      <tr>
-        <th><span class="zh">门槛</span><span class="en">Threshold</span></th>
-        <th style="text-align:right;"><span class="zh">通过</span><span class="en">Pass</span></th>
-        <th style="text-align:right;"><span class="zh">占比</span><span class="en">Pct</span></th>
-        <th><span class="zh">备注</span><span class="en">Notes</span></th>
-      </tr>
-    </thead>
-    <tbody>
-{sweep_rows}    </tbody>
+    <thead><tr>
+      <th><span class="zh">门槛</span><span class="en">Threshold</span></th>
+      <th style="text-align:right;"><span class="zh">通过</span><span class="en">Pass</span></th>
+      <th style="text-align:right;"><span class="zh">占比</span><span class="en">Pct</span></th>
+      <th></th>
+    </tr></thead>
+    <tbody>{sweep_rows}</tbody>
   </table>
 
   <!-- continuity -->
-  <h3 style="margin-top:24px;"><span class="zh">连续性检验（最新期≥30% → 近N期均≥15%）</span><span class="en">Continuity Check (latest ≥30% → prior N periods ≥15%)</span></h3>
-  <div class="card" style="padding:14px 18px;">
+  <h3 style="margin-top:20px;"><span class="zh">连续性检验</span><span class="en">Continuity</span></h3>
+  <div class="card" style="padding:12px 16px;">
     <table style="margin:0;">
       <tr>
-        <td><span class="zh">最新期 营收+净利 均≥30%</span><span class="en">Latest quarter both ≥30%</span></td>
+        <td><span class="zh">最新期双≥30%（本期盈利）</span><span class="en">Latest dual ≥30%</span></td>
         <td style="text-align:right;font-weight:600;">{cnt_30} 只</td>
-        <td style="color:var(--text-muted);font-size:12px;">baseline</td>
+        <td style="font-size:11px;color:var(--text-muted);">baseline</td>
       </tr>
       <tr>
-        <td><span class="zh">+ 近2期均≥15%（连续两期）</span><span class="en">+ Prior 2 periods ≥15%</span></td>
+        <td><span class="zh">+ 近2期均≥15%</span><span class="en">+ Prior 2 periods ≥15%</span></td>
         <td style="text-align:right;font-weight:600;">{len(cont2)} 只</td>
-        <td style="color:var(--text-muted);font-size:12px;"><span class="zh">淘汰 {100-pct_cont2:.0f}%</span><span class="en">Attrition {100-pct_cont2:.0f}%</span></td>
+        <td style="font-size:11px;color:var(--text-muted);"><span class="zh">淘汰 {100-pct_cont2:.0f}%</span><span class="en">Attrition {100-pct_cont2:.0f}%</span></td>
       </tr>
       <tr>
-        <td><span class="zh">+ 近3期均≥15%（连续三期）</span><span class="en">+ Prior 3 periods ≥15%</span></td>
+        <td><span class="zh">+ 近3期均≥15%</span><span class="en">+ Prior 3 periods ≥15%</span></td>
         <td style="text-align:right;font-weight:600;">{len(cont3)} 只</td>
-        <td style="color:var(--text-muted);font-size:12px;"><span class="zh">淘汰 {100-pct_cont3:.0f}%</span><span class="en">Attrition {100-pct_cont3:.0f}%</span></td>
+        <td style="font-size:11px;color:var(--text-muted);"><span class="zh">淘汰 {100-pct_cont3:.0f}%</span><span class="en">Attrition {100-pct_cont3:.0f}%</span></td>
       </tr>
     </table>
   </div>
-  <p style="font-size:12px;color:var(--text-muted);margin-top:6px;">
-    <span class="zh">MVP 设计：最新期≥30% 作为硬门槛；连续性（近2-3期≥15%）在 Dislocation 通道作为加权排序因子。</span>
-    <span class="en">MVP design: latest ≥30% is a hard gate; continuity used as weighting in Dislocation channel.</span>
-  </p>
 
-  <!-- passing list -->
-  <h3 style="margin-top:24px;">
-    <span class="zh">双≥30%通过名单（{cnt_30} 只，按净利同比降序）</span>
-    <span class="en">Dual ≥30% Passing List ({cnt_30} stocks, sorted by NP YoY desc)</span>
-  </h3>
-  <div class="callout" style="margin-bottom:10px;padding:10px 14px;">
-    <span class="zh">
-      <strong>列说明</strong>：
-      行业 = 东方财富行业分类（结构近似申万二级，数据来源 RPT_F10_ORG_BASICINFO）；
-      主营简介来自东方财富公司简档（ORG_PROFILE）；
-      净利同比 = 含非经常性损益；
-      <strong>扣非净利同比</strong> = 扣除非经常性损益，反映主业真实增长，差距大时标橙。
-      指数：<span style="color:#17becf;">■</span> 沪深300&nbsp;
-      <span style="color:#3fb950;">■</span> 中证500&nbsp;
-      <span style="color:#ffd700;">■</span> 两者均有。
-    </span>
-    <span class="en">
-      <strong>Column notes</strong>:
-      Industry = East Money board classification (mirrors Shenwan L2 structure; source: RPT_F10_ORG_BASICINFO);
-      Business = East Money company profile (ORG_PROFILE);
-      NP YoY = reported NP incl. non-recurring items;
-      <strong>Adj NP YoY</strong> = excl. non-recurring items, large gap highlighted orange.
-      Index: <span style="color:#17becf;">■</span> CSI300&nbsp;
-      <span style="color:#3fb950;">■</span> CSI500&nbsp;
-      <span style="color:#ffd700;">■</span> Both.
-    </span>
+  <!-- link to full page -->
+  <div style="margin-top:20px;text-align:center;">
+    <a href="/growth-gate-probe.html"
+       style="display:inline-block;background:#17becf;color:#000;font-weight:600;
+              font-size:13px;padding:10px 28px;border-radius:6px;text-decoration:none;">
+      <span class="zh">查看完整名单 → {cnt_30} 只详细分析</span>
+      <span class="en">View Full List → {cnt_30} stocks with detail</span>
+    </a>
   </div>
-  <div style="overflow-x:auto;">
-  <table style="font-size:12px;">
-    {table_header}
-    <tbody>
-{stock_rows_visible}    </tbody>
-  </table>
-  </div>
-{show_more_btn}
-
-  <!-- distribution charts -->
-  <details class="expandable" style="margin-top:24px;">
-    <summary><span class="zh">增速分布直方图（营收同比 &amp; 净利润同比）</span><span class="en">Growth Rate Distribution (Revenue YoY &amp; Net Profit YoY)</span></summary>
-    <div class="expandable-body">
-      <style>
-        .dist-bar-wrap {{ display:flex; align-items:center; gap:6px; width:100%; }}
-        .dist-bar {{ height:14px; border-radius:3px; min-width:2px; transition:width .3s; }}
-        .dist-cnt {{ font-size:11px; color:var(--text-muted); white-space:nowrap; }}
-      </style>
-
-      <h3><span class="zh">营收同比分布（{data_ok} 只）</span><span class="en">Revenue YoY Distribution ({data_ok} stocks)</span></h3>
-      <table style="font-size:12px;width:100%;"><tbody>{rev_rows}</tbody></table>
-
-      <h3 style="margin-top:16px;"><span class="zh">净利润同比分布（{data_ok} 只）</span><span class="en">Net Profit YoY Distribution ({data_ok} stocks)</span></h3>
-      <table style="font-size:12px;width:100%;"><tbody>{np_rows}</tbody></table>
-    </div>
-  </details>
 
   <p style="font-size:12px;color:var(--text-muted);margin-top:12px;">
-    <span class="zh">脚本: <code>scripts/growth_gate_probe.py</code> + <code>scripts/generate_probe_html.py</code> | 扣非字段: <code>KCFJCXSYJLRTZ</code> | 数据源: datacenter-web.eastmoney.com</span>
-    <span class="en">Scripts: <code>growth_gate_probe.py</code> + <code>generate_probe_html.py</code> | Adj NP field: <code>KCFJCXSYJLRTZ</code> | Source: datacenter-web.eastmoney.com</span>
+    <span class="zh">脚本: <code>scripts/growth_gate_probe.py</code> | 数据: datacenter-web.eastmoney.com</span>
+    <span class="en">Script: <code>scripts/growth_gate_probe.py</code> | Source: datacenter-web.eastmoney.com</span>
   </p>
 </section>
 {SECTION_END}
-'''
-    return html
+"""
 
 
-# ── 页面注入 ──────────────────────────────────────────────────────────────────
+# ── nav link ─────────────────────────────────────────────────────────────────
 
 def add_nav_link(html: str) -> str:
     marker = 'href="#growth-gate-probe"'
@@ -619,50 +645,70 @@ def add_nav_link(html: str) -> str:
 def main() -> None:
     run_ts = datetime.now(BJT).strftime("%Y-%m-%d %H:%M")
 
-    print("Fetching universe (names + index membership) from csindex.com.cn...")
+    print("Fetching universe...")
     universe = load_universe()
-    print(f"  {len(universe)} stocks loaded")
+    print(f"  {len(universe)} stocks")
 
-    print(f"Loading fundamentals cache: {CACHE_JSONL}")
+    print("Loading cache...")
     records = load_cache()
-    print(f"  {len(records)} records loaded")
+    print(f"  {len(records)} records")
 
-    # 先算出通过30%门槛的股票，只为它们拉扣非数据
     data_ok_list = [
         r for r in records
         if r["periods"] and
         r["periods"][0].get("revenue_growth") is not None and
         r["periods"][0].get("net_profit_growth") is not None
     ]
-    passing_symbols = [
-        r["symbol"] for r in data_ok_list
-        if passes_gate(r["periods"], 30)
-    ]
-    print(f"\n过30%门槛: {len(passing_symbols)} 只")
-    print("拉取扣非净利润...")
-    extra_map = fetch_extra_fields(passing_symbols)
-    print("拉取行业分类+公司简介...")
+    data_ok = len(data_ok_list)
+    period_name = data_ok_list[0]["periods"][0]["period_name"] if data_ok_list else "—"
+    report_date = data_ok_list[0]["periods"][0]["report_date"] if data_ok_list else "—"
+
+    # 门槛扫描
+    thresholds = [10, 15, 20, 25, 30, 35, 40, 50]
+    sweep = []
+    for th in thresholds:
+        passed = [r for r in data_ok_list if passes_gate(r["periods"], th)]
+        pct = len(passed) / data_ok * 100 if data_ok else 0
+        sweep.append((th, len(passed), pct, (60 <= len(passed) <= 120)))
+
+    passed_30_raw = [r for r in data_ok_list if passes_gate(r["periods"], 30)]
+    passed_30 = sorted(passed_30_raw, key=lambda x: -x["periods"][0]["net_profit_growth"])
+    cnt_30 = len(passed_30)
+
+    cont2 = [r for r in passed_30_raw if passes_continuity(r["periods"], 15, 2)]
+    cont3 = [r for r in passed_30_raw if passes_continuity(r["periods"], 15, 3)]
+
+    passing_symbols = [r["symbol"] for r in passed_30]
+
+    print(f"\n过门槛: {cnt_30} 只，拉取额外字段...")
+    extra_map   = fetch_extra_fields(passing_symbols)
     profile_map = fetch_profile_fields(passing_symbols)
 
-    print("\nGenerating HTML section...")
-    section_html = generate_html(records, universe, extra_map, profile_map, run_ts)
+    # ── 独立页面 ──────────────────────────────────────────────────────────────
+    print(f"\n生成 {PROBE_PAGE.name} ...")
+    probe_html = generate_probe_page(
+        passed_30, universe, extra_map, profile_map,
+        sweep, cont2, cont3, data_ok, period_name, report_date, run_ts,
+    )
+    PROBE_PAGE.write_text(probe_html, encoding="utf-8")
+    print(f"  {PROBE_PAGE.stat().st_size // 1024} KB")
 
-    print(f"Injecting into {DOCS_PAGE}...")
-    content = DOCS_PAGE.read_text(encoding="utf-8")
-
+    # ── stock-screener.html 摘要 ──────────────────────────────────────────────
+    print(f"更新 {SCREENER_PAGE.name} 摘要节...")
+    section = generate_screener_section(
+        cnt_30, data_ok, sweep, cont2, cont3, period_name, report_date, run_ts,
+    )
+    content = SCREENER_PAGE.read_text(encoding="utf-8")
     if SECTION_START in content:
-        start_idx = content.index(SECTION_START)
-        end_idx = content.index(SECTION_END) + len(SECTION_END)
-        content = content[:start_idx] + content[end_idx:]
+        s = content.index(SECTION_START)
+        e = content.index(SECTION_END) + len(SECTION_END)
+        content = content[:s] + content[e:]
         print("  (replaced existing section)")
-
     content = add_nav_link(content)
-
     inject_at = content.index(INJECT_BEFORE)
-    content = content[:inject_at] + section_html + "\n" + content[inject_at:]
-
-    DOCS_PAGE.write_text(content, encoding="utf-8")
-    print(f"  Done — {DOCS_PAGE.stat().st_size // 1024} KB")
+    content = content[:inject_at] + section + "\n" + content[inject_at:]
+    SCREENER_PAGE.write_text(content, encoding="utf-8")
+    print(f"  {SCREENER_PAGE.stat().st_size // 1024} KB")
 
 
 if __name__ == "__main__":
