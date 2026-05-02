@@ -814,7 +814,8 @@ tr:hover td {{ background:var(--surface2); }}
       var asc = sortState.col === ci ? !sortState.asc : true;
       sortState = {{col: ci, asc: asc}};
       ths.forEach(function(h) {{
-        h.querySelector('.sort-icon').textContent = '⇅';
+        var si = h.querySelector('.sort-icon');
+        if (si) si.textContent = '⇅';
         h.classList.remove('sort-active');
       }});
       th.querySelector('.sort-icon').textContent = asc ? '▲' : '▼';
