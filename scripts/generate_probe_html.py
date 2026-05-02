@@ -20,7 +20,8 @@ import requests
 BJT = timezone(timedelta(hours=8))
 REPO_DIR = Path(__file__).resolve().parent.parent
 CACHE_JSONL  = REPO_DIR / "artifacts" / "growth-gate-probe" / "fundamentals.jsonl"
-PRICE_CACHE  = REPO_DIR / "artifacts" / "growth-gate-probe" / "price-history.jsonl"
+PRICE_CACHE   = REPO_DIR / "artifacts" / "growth-gate-probe" / "price-history.jsonl"
+QUALITY_CACHE = REPO_DIR / "artifacts" / "growth-gate-probe" / "quality-metrics.jsonl"
 DOCS_DIR  = Path("/home/ubuntu/docs-site/pages")
 PROBE_PAGE = DOCS_DIR / "growth-gate-probe.html"
 SCREENER_PAGE = DOCS_DIR / "stock-screener.html"
@@ -88,6 +89,16 @@ def load_price_cache() -> dict[str, list[float]]:
     return cache
 
 
+def _parse_pct(val: object) -> float | None:
+    """'19.70%' / '19.70' / False / None → float or None."""
+    if val is False or val is None:
+        return None
+    try:
+        return float(str(val).replace("%", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
 _TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 
@@ -145,6 +156,59 @@ def fetch_price_history(symbols: list[str], use_cache: bool) -> dict[str, list[f
         print(f"  股价走势: 全部 {len(symbols)} 只复用缓存")
 
     return {s: cache.get(s, []) for s in symbols}
+
+
+def fetch_quality_metrics(symbols: list[str], use_cache: bool) -> dict[str, dict]:
+    """ROE(年报)、资产负债率(最新期)、CFO质量(年报 OCF/EPS)，来自同花顺财务摘要。
+    一次 THS 调用拿三个字段，只对过门槛的 ~100 只股票调用。"""
+    cache: dict[str, dict] = {}
+    if use_cache and QUALITY_CACHE.exists():
+        for line in QUALITY_CACHE.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rec = json.loads(line)
+                cache[rec["symbol"]] = rec
+
+    missing = [s for s in symbols if s not in cache]
+    if missing:
+        print(f"  拉取质量指标（{len(missing)} 只，THS，约 {len(missing)*0.4/60:.0f} 分钟）...")
+        QUALITY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        written: set[str] = set(cache.keys())
+
+        for i, sym in enumerate(missing, 1):
+            rec: dict = {"symbol": sym, "roe_annual": None, "debt_ratio": None, "cfo_quality": None}
+            try:
+                df = ak.stock_financial_abstract_ths(symbol=sym, indicator="按报告期")
+                df = df.sort_values("报告期", ascending=False).reset_index(drop=True)
+                if not df.empty:
+                    # 资产负债率：取最新期
+                    rec["debt_ratio"] = _parse_pct(df.iloc[0].get("资产负债率"))
+                    # ROE 和 CFO质量：取最新年报（报告期以 -12-31 结尾）
+                    annual = df[df["报告期"].str.endswith("-12-31")]
+                    if not annual.empty:
+                        row = annual.iloc[0]
+                        rec["roe_annual"] = _parse_pct(row.get("净资产收益率"))
+                        ocf = _parse_pct(row.get("每股经营现金流"))
+                        eps = _parse_pct(row.get("基本每股收益"))
+                        if ocf is not None and eps is not None and abs(eps) > 0.001:
+                            rec["cfo_quality"] = round(ocf / eps, 2)
+            except Exception as e:
+                print(f"    {sym} 质量指标失败: {e}")
+
+            cache[sym] = rec
+            if sym not in written:
+                with QUALITY_CACHE.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                written.add(sym)
+            if i % 20 == 0:
+                print(f"    {i}/{len(missing)} ...", flush=True)
+            time.sleep(0.35)
+
+        ok = sum(1 for s in missing if cache.get(s, {}).get("roe_annual") is not None)
+        print(f"  质量指标: {ok}/{len(missing)} 只获取成功")
+    else:
+        print(f"  质量指标: 全部 {len(symbols)} 只复用缓存")
+
+    return {s: cache.get(s, {}) for s in symbols}
 
 
 def make_sparkline(prices: list[float], width: int = 104, height: int = 38) -> str:
@@ -320,7 +384,7 @@ def bar(count: int, scale: int, color: str = "#17becf") -> str:
 # ── 行渲染 ───────────────────────────────────────────────────────────────────
 
 def stock_row_html(r: dict, universe: dict, extra_map: dict,
-                   profile_map: dict, price_map: dict) -> str:
+                   profile_map: dict, price_map: dict, quality_map: dict) -> str:
     p0  = r["periods"][0]
     sym = r["symbol"]
     rg  = p0["revenue_growth"]
@@ -349,6 +413,18 @@ def stock_row_html(r: dict, universe: dict, extra_map: dict,
 
     sparkline = make_sparkline(price_map.get(sym, []))
 
+    qm = quality_map.get(sym, {})
+    roe    = qm.get("roe_annual")
+    debt   = qm.get("debt_ratio")
+    cfo_q  = qm.get("cfo_quality")
+
+    roe_s    = f"{roe:.1f}%" if roe is not None else "—"
+    roe_col  = ("#3fb950" if roe >= 15 else "#8b949e") if roe is not None else "#555"
+    debt_s   = f"{debt:.1f}%" if debt is not None else "—"
+    debt_col = ("#e05252" if debt > 65 else "#8b949e") if debt is not None else "#555"
+    cfo_s    = f"{cfo_q:.2f}" if cfo_q is not None else "—"
+    cfo_col  = ("#3fb950" if cfo_q >= 0.8 else ("#e3b341" if cfo_q >= 0 else "#e05252")) if cfo_q is not None else "#555"
+
     return (
         f'<tr>'
         f'<td class="mono">{sym}</td>'
@@ -360,6 +436,9 @@ def stock_row_html(r: dict, universe: dict, extra_map: dict,
         f'<td class="num" style="color:#17becf;">{rg:+.1f}%</td>'
         f'<td class="num" style="color:#9ecde6;">{ng:+.1f}%</td>'
         f'<td class="num" style="color:{dng_color};font-weight:600;">{dng_s}</td>'
+        f'<td class="num" style="color:{roe_col};">{roe_s}</td>'
+        f'<td class="num" style="color:{debt_col};">{debt_s}</td>'
+        f'<td class="num" style="color:{cfo_col};">{cfo_s}</td>'
         f'<td class="ctr" style="color:{cont_color};">{cont}</td>'
         f'<td class="analysis-cell">{analysis}</td>'
         f'<td class="nowrap muted">{p0.get("period_name","")}</td>'
@@ -375,6 +454,7 @@ def generate_probe_page(
     extra_map: dict,
     profile_map: dict,
     price_map: dict,
+    quality_map: dict,
     sweep: list[tuple],
     cont2: list,
     cont3: list,
@@ -405,7 +485,7 @@ def generate_probe_page(
 
     # 107只名单
     all_rows = "".join(
-        stock_row_html(r, universe, extra_map, profile_map, price_map) for r in passed_30
+        stock_row_html(r, universe, extra_map, profile_map, price_map, quality_map) for r in passed_30
     )
 
     # 分布直方图
@@ -493,6 +573,28 @@ tr:hover td {{ background:var(--surface2); }}
 .dist-bar-wrap {{ display:flex; align-items:center; gap:6px; width:100%; }}
 .dist-bar {{ height:13px; border-radius:3px; min-width:2px; }}
 .dist-cnt {{ font-size:11px; color:var(--text-muted); white-space:nowrap; }}
+
+/* filter bar */
+.filter-bar {{
+  display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:8px; padding:10px 14px; margin:10px 0 8px;
+  font-size:12.5px;
+}}
+.filter-label {{ font-weight:600; color:var(--text-muted); white-space:nowrap; margin-right:4px; }}
+.filter-item {{ display:flex; align-items:center; gap:4px; white-space:nowrap; color:var(--text-muted); }}
+.filter-item input {{
+  background:var(--bg); border:1px solid var(--border); border-radius:4px;
+  color:var(--text); padding:3px 7px; width:62px; font-size:12px;
+}}
+.filter-item input[type="text"] {{ width:84px; }}
+.filter-item input:focus {{ outline:none; border-color:var(--accent6); box-shadow:0 0 0 2px #17becf22; }}
+.filter-reset {{
+  background:#17becf1a; border:1px solid #17becf44; color:#17becf;
+  border-radius:4px; padding:3px 12px; cursor:pointer; font-size:12px; white-space:nowrap;
+}}
+.filter-reset:hover {{ background:#17becf33; }}
+.filter-count {{ margin-left:auto; color:var(--accent6); font-weight:700; white-space:nowrap; font-size:13px; }}
 
 /* responsive */
 @media(max-width:900px) {{
@@ -583,6 +685,29 @@ tr:hover td {{ background:var(--surface2); }}
   <strong>扣非净利同比</strong> = 扣除非经常性损益（橙色 = 与净利差距 &gt;20pp，净利润有一次性收益撑高）&nbsp;|&nbsp;
   2期 ✓ = 近2期营收+净利均≥15%
 </div>
+<div class="filter-bar" id="filter-bar">
+  <span class="filter-label">筛选</span>
+  <label class="filter-item">行业
+    <input class="filter-input" type="text" data-col="4" data-op="text" placeholder="关键字">
+  </label>
+  <label class="filter-item">营收同比 ≥
+    <input class="filter-input" type="number" data-col="6" data-op="min" placeholder="30">%
+  </label>
+  <label class="filter-item">净利同比 ≥
+    <input class="filter-input" type="number" data-col="7" data-op="min" placeholder="30">%
+  </label>
+  <label class="filter-item">ROE年报 ≥
+    <input class="filter-input" type="number" data-col="9" data-op="min" placeholder="15">%
+  </label>
+  <label class="filter-item">资产负债率 ≤
+    <input class="filter-input" type="number" data-col="10" data-op="max" placeholder="65">%
+  </label>
+  <label class="filter-item">CFO质量 ≥
+    <input class="filter-input" type="number" data-col="11" data-op="min" placeholder="0.8">
+  </label>
+  <button class="filter-reset" onclick="resetFilters()">重置</button>
+  <span class="filter-count" id="filter-count">{cnt} / {cnt} 只</span>
+</div>
 <div class="table-scroll tall">
 <table id="stock-table">
   <thead><tr>
@@ -595,6 +720,9 @@ tr:hover td {{ background:var(--surface2); }}
     <th class="num">营收同比</th>
     <th class="num">净利同比</th>
     <th class="num">扣非净利同比</th>
+    <th class="num">ROE年报</th>
+    <th class="num">资产负债率</th>
+    <th class="num">CFO质量</th>
     <th class="ctr">2期</th>
     <th>增速分析</th>
     <th>报告期</th>
@@ -661,6 +789,52 @@ tr:hover td {{ background:var(--surface2); }}
     }});
   }});
 }})();
+
+// ── 列筛选 ────────────────────────────────────────────────────────────────────
+function applyFilters() {{
+  var inputs  = document.querySelectorAll('.filter-input');
+  var active  = [];
+  inputs.forEach(function(inp) {{
+    var v = inp.value.trim();
+    if (v) active.push({{ col: parseInt(inp.dataset.col), op: inp.dataset.op || 'min', val: v }});
+  }});
+  var rows   = document.querySelectorAll('#stock-table tbody tr');
+  var shown  = 0;
+  rows.forEach(function(row) {{
+    var pass = true;
+    for (var fi = 0; fi < active.length; fi++) {{
+      var f    = active[fi];
+      var cell = row.cells[f.col];
+      if (!cell) {{ pass = false; break; }}
+      var text = cell.textContent.trim();
+      if (f.op === 'text') {{
+        if (!text.toLowerCase().includes(f.val.toLowerCase())) {{ pass = false; break; }}
+      }} else {{
+        if (text === '—' || text === '') {{ pass = false; break; }}
+        var num = parseFloat(text.replace(/[+%,\\s]/g, ''));
+        var thr = parseFloat(f.val);
+        if (isNaN(num) || isNaN(thr)) continue;
+        if (f.op === 'min' && num < thr) {{ pass = false; break; }}
+        if (f.op === 'max' && num > thr) {{ pass = false; break; }}
+      }}
+    }}
+    row.style.display = pass ? '' : 'none';
+    if (pass) shown++;
+  }});
+  var el = document.getElementById('filter-count');
+  if (el) el.textContent = shown + ' / {cnt} 只';
+}}
+
+function resetFilters() {{
+  document.querySelectorAll('.filter-input').forEach(function(inp) {{ inp.value = ''; }});
+  document.querySelectorAll('#stock-table tbody tr').forEach(function(r) {{ r.style.display = ''; }});
+  var el = document.getElementById('filter-count');
+  if (el) el.textContent = '{cnt} / {cnt} 只';
+}}
+
+document.querySelectorAll('.filter-input').forEach(function(inp) {{
+  inp.addEventListener('input', applyFilters);
+}});
 </script>
 </body>
 </html>"""
@@ -818,7 +992,9 @@ def add_nav_link(html: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="生成 growth-gate-probe HTML 报告")
     parser.add_argument("--use-price-cache", action="store_true",
-                        help="复用上次股价缓存，跳过 akshare 拉取（~2min）")
+                        help="复用上次股价缓存，跳过腾讯财经拉取（~1min）")
+    parser.add_argument("--use-quality-cache", action="store_true",
+                        help="复用上次质量指标缓存，跳过 THS 拉取（~1min）")
     args = parser.parse_args()
 
     run_ts = datetime.now(BJT).strftime("%Y-%m-%d %H:%M")
@@ -865,10 +1041,13 @@ def main() -> None:
     print("\n拉取股价走势...")
     price_map = fetch_price_history(passing_symbols, use_cache=args.use_price_cache)
 
+    print("\n拉取质量指标...")
+    quality_map = fetch_quality_metrics(passing_symbols, use_cache=args.use_quality_cache)
+
     # ── 独立页面 ──────────────────────────────────────────────────────────────
     print(f"\n生成 {PROBE_PAGE.name} ...")
     probe_html = generate_probe_page(
-        passed_30, universe, extra_map, profile_map, price_map,
+        passed_30, universe, extra_map, profile_map, price_map, quality_map,
         sweep, cont2, cont3, data_ok, period_name, report_date, run_ts,
     )
     PROBE_PAGE.write_text(probe_html, encoding="utf-8")
