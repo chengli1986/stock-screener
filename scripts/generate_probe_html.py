@@ -8,6 +8,7 @@
 Usage:
   python3 scripts/generate_probe_html.py
 """
+import argparse
 import json
 import time
 from datetime import datetime, timezone, timedelta
@@ -18,7 +19,8 @@ import requests
 
 BJT = timezone(timedelta(hours=8))
 REPO_DIR = Path(__file__).resolve().parent.parent
-CACHE_JSONL = REPO_DIR / "artifacts" / "growth-gate-probe" / "fundamentals.jsonl"
+CACHE_JSONL  = REPO_DIR / "artifacts" / "growth-gate-probe" / "fundamentals.jsonl"
+PRICE_CACHE  = REPO_DIR / "artifacts" / "growth-gate-probe" / "price-history.jsonl"
 DOCS_DIR  = Path("/home/ubuntu/docs-site/pages")
 PROBE_PAGE = DOCS_DIR / "growth-gate-probe.html"
 SCREENER_PAGE = DOCS_DIR / "stock-screener.html"
@@ -71,6 +73,114 @@ def load_cache() -> list[dict]:
         if line:
             records.append(json.loads(line))
     return records
+
+
+# ── 股价走势缓存 ──────────────────────────────────────────────────────────────
+
+def load_price_cache() -> dict[str, list[float]]:
+    cache: dict[str, list[float]] = {}
+    if PRICE_CACHE.exists():
+        for line in PRICE_CACHE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                rec = json.loads(line)
+                cache[rec["symbol"]] = rec["prices"]
+    return cache
+
+
+_TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def _tencent_market(symbol: str) -> str:
+    """根据代码前缀判断交易所前缀（腾讯财经格式）。"""
+    return "sh" if symbol.startswith("6") else "sz"
+
+
+def fetch_price_history(symbols: list[str], use_cache: bool) -> dict[str, list[float]]:
+    """近一年前复权日线收盘价，腾讯财经 K 线 API（不被 EC2 封锁）。
+    返回 {symbol: [close, ...]}。"""
+    cache = load_price_cache() if use_cache else {}
+    missing = [s for s in symbols if s not in cache]
+
+    if missing:
+        end_dt   = datetime.now(BJT)
+        start_dt = end_dt - timedelta(days=366)
+        end_s    = end_dt.strftime("%Y-%m-%d")
+        start_s  = start_dt.strftime("%Y-%m-%d")
+        print(f"  拉取股价走势（{len(missing)} 只，腾讯财经，约 {len(missing)*0.6/60:.0f} 分钟）...")
+
+        PRICE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        written: set[str] = set(cache.keys())
+
+        for i, sym in enumerate(missing, 1):
+            prices: list[float] = []
+            try:
+                mkt  = _tencent_market(sym)
+                code = f"{mkt}{sym}"
+                r = requests.get(
+                    _TENCENT_URL,
+                    params={"param": f"{code},day,{start_s},{end_s},300,qfq"},
+                    headers={"Referer": "https://gu.qq.com/"},
+                    timeout=10,
+                )
+                d = r.json()
+                rows = d.get("data", {}).get(code, {}).get("qfqday", [])
+                # 每行格式: [date, open, close, high, low, volume, ...]
+                prices = [round(float(row[2]), 3) for row in rows if len(row) >= 3]
+            except Exception as e:
+                print(f"    {sym} 价格获取失败: {e}")
+            cache[sym] = prices
+            if sym not in written:
+                with PRICE_CACHE.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"symbol": sym, "prices": prices},
+                                       ensure_ascii=False) + "\n")
+                written.add(sym)
+            if i % 20 == 0:
+                print(f"    {i}/{len(missing)} ...", flush=True)
+            time.sleep(0.2)
+
+        ok = sum(1 for s in missing if cache.get(s))
+        print(f"  股价数据: {ok}/{len(missing)} 只获取成功")
+    else:
+        print(f"  股价走势: 全部 {len(symbols)} 只复用缓存")
+
+    return {s: cache.get(s, []) for s in symbols}
+
+
+def make_sparkline(prices: list[float], width: int = 104, height: int = 38) -> str:
+    """生成内嵌 SVG 迷你走势图；价格为空则返回占位符。"""
+    if len(prices) < 10:
+        return '<span style="color:#555;font-size:11px;">—</span>'
+
+    lo, hi = min(prices), max(prices)
+    rng = hi - lo or lo * 0.01 or 1.0
+
+    pad_x, pad_y = 2, 3
+    n = len(prices)
+    pts = []
+    for i, p in enumerate(prices):
+        x = pad_x + (width  - 2 * pad_x) * i / (n - 1)
+        y = (height - pad_y) - (height - 2 * pad_y) * (p - lo) / rng
+        pts.append(f"{x:.1f},{y:.1f}")
+
+    color      = "#3fb950" if prices[-1] >= prices[0] else "#e05252"
+    fill_color = color + "28"
+    pts_str    = " ".join(pts)
+
+    # 封闭多边形（填充区域）
+    bx0 = f"{pad_x:.1f}"
+    bxn = f"{pad_x + (width - 2*pad_x):.1f}"
+    by  = f"{height - pad_y:.1f}"
+    fill_pts = f"{bx0},{by} {pts_str} {bxn},{by}"
+
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'style="display:block;flex-shrink:0;">'
+        f'<polygon points="{fill_pts}" fill="{fill_color}" stroke="none"/>'
+        f'<polyline points="{pts_str}" stroke="{color}" stroke-width="1.5" '
+        f'fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+        f'</svg>'
+    )
 
 
 def _batch_fetch(
@@ -209,7 +319,8 @@ def bar(count: int, scale: int, color: str = "#17becf") -> str:
 
 # ── 行渲染 ───────────────────────────────────────────────────────────────────
 
-def stock_row_html(r: dict, universe: dict, extra_map: dict, profile_map: dict) -> str:
+def stock_row_html(r: dict, universe: dict, extra_map: dict,
+                   profile_map: dict, price_map: dict) -> str:
     p0  = r["periods"][0]
     sym = r["symbol"]
     rg  = p0["revenue_growth"]
@@ -236,10 +347,13 @@ def stock_row_html(r: dict, universe: dict, extra_map: dict, profile_map: dict) 
     industry = pinfo.get("industry", "—")
     profile  = pinfo.get("profile", "—")
 
+    sparkline = make_sparkline(price_map.get(sym, []))
+
     return (
         f'<tr>'
         f'<td class="mono">{sym}</td>'
         f'<td class="nowrap">{name}</td>'
+        f'<td class="sparkline-cell">{sparkline}</td>'
         f'<td class="ctr"><span style="color:{idx_color};font-size:11px;">{index}</span></td>'
         f'<td class="ctr industry-cell">{industry}</td>'
         f'<td class="profile-cell">{profile}</td>'
@@ -260,6 +374,7 @@ def generate_probe_page(
     universe: dict,
     extra_map: dict,
     profile_map: dict,
+    price_map: dict,
     sweep: list[tuple],
     cont2: list,
     cont3: list,
@@ -289,7 +404,9 @@ def generate_probe_page(
         )
 
     # 107只名单
-    all_rows = "".join(stock_row_html(r, universe, extra_map, profile_map) for r in passed_30)
+    all_rows = "".join(
+        stock_row_html(r, universe, extra_map, profile_map, price_map) for r in passed_30
+    )
 
     # 分布直方图
     buckets = [(-999, -50), (-50, 0), (0, 10), (10, 20), (20, 30),
@@ -361,6 +478,7 @@ tr:hover td {{ background:var(--surface2); }}
 .industry-cell {{ white-space:nowrap; font-size:11px; }}
 .profile-cell {{ font-size:11px; color:var(--text-muted); max-width:260px; }}
 .analysis-cell {{ font-size:11px; color:var(--text-muted); min-width:160px; }}
+.sparkline-cell {{ padding:4px 8px; vertical-align:middle; }}
 .badge-target {{ background:#17becf22; color:#17becf; font-size:10px;
   padding:2px 6px; border-radius:4px; white-space:nowrap; }}
 
@@ -470,6 +588,7 @@ tr:hover td {{ background:var(--surface2); }}
   <thead><tr>
     <th>代码</th>
     <th>名称</th>
+    <th data-no-sort>走势</th>
     <th class="ctr">指数</th>
     <th class="ctr">行业</th>
     <th>主营简介</th>
@@ -520,6 +639,7 @@ tr:hover td {{ background:var(--surface2); }}
   }}
 
   ths.forEach(function(th, ci) {{
+    if (th.hasAttribute('data-no-sort')) return;
     var icon = document.createElement('span');
     icon.className = 'sort-icon';
     icon.textContent = '⇅';
@@ -696,6 +816,11 @@ def add_nav_link(html: str) -> str:
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="生成 growth-gate-probe HTML 报告")
+    parser.add_argument("--use-price-cache", action="store_true",
+                        help="复用上次股价缓存，跳过 akshare 拉取（~2min）")
+    args = parser.parse_args()
+
     run_ts = datetime.now(BJT).strftime("%Y-%m-%d %H:%M")
 
     print("Fetching universe...")
@@ -737,10 +862,13 @@ def main() -> None:
     extra_map   = fetch_extra_fields(passing_symbols)
     profile_map = fetch_profile_fields(passing_symbols)
 
+    print("\n拉取股价走势...")
+    price_map = fetch_price_history(passing_symbols, use_cache=args.use_price_cache)
+
     # ── 独立页面 ──────────────────────────────────────────────────────────────
     print(f"\n生成 {PROBE_PAGE.name} ...")
     probe_html = generate_probe_page(
-        passed_30, universe, extra_map, profile_map,
+        passed_30, universe, extra_map, profile_map, price_map,
         sweep, cont2, cont3, data_ok, period_name, report_date, run_ts,
     )
     PROBE_PAGE.write_text(probe_html, encoding="utf-8")
