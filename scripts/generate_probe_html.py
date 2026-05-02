@@ -135,7 +135,9 @@ def fetch_price_history(symbols: list[str], use_cache: bool) -> dict[str, list[f
                     timeout=10,
                 )
                 d = r.json()
-                rows = d.get("data", {}).get(code, {}).get("qfqday", [])
+                stock_data = d.get("data", {}).get(code, {})
+                # 科创板(688xxx)只返回 day，主板/创业板返回 qfqday（前复权）
+                rows = stock_data.get("qfqday") or stock_data.get("day", [])
                 # 每行格式: [date, open, close, high, low, volume, ...]
                 prices = [round(float(row[2]), 3) for row in rows if len(row) >= 3]
             except Exception as e:
