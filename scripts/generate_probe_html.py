@@ -213,8 +213,14 @@ def fetch_quality_metrics(symbols: list[str], use_cache: bool) -> dict[str, dict
     return {s: cache.get(s, {}) for s in symbols}
 
 
+def _fmt_price(p: float) -> str:
+    if p >= 1000: return f"¥{p:.0f}"
+    if p >= 100:  return f"¥{p:.1f}"
+    return f"¥{p:.2f}"
+
+
 def make_sparkline(prices: list[float], width: int = 104, height: int = 38) -> str:
-    """生成内嵌 SVG 迷你走势图；价格为空则返回占位符。"""
+    """生成内嵌 SVG 迷你走势图 + 起始/最新价标注；价格为空则返回占位符。"""
     if len(prices) < 10:
         return '<span style="color:#555;font-size:11px;">—</span>'
 
@@ -233,19 +239,31 @@ def make_sparkline(prices: list[float], width: int = 104, height: int = 38) -> s
     fill_color = color + "28"
     pts_str    = " ".join(pts)
 
-    # 封闭多边形（填充区域）
     bx0 = f"{pad_x:.1f}"
     bxn = f"{pad_x + (width - 2*pad_x):.1f}"
     by  = f"{height - pad_y:.1f}"
     fill_pts = f"{bx0},{by} {pts_str} {bxn},{by}"
 
-    return (
+    svg = (
         f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
         f'style="display:block;flex-shrink:0;">'
         f'<polygon points="{fill_pts}" fill="{fill_color}" stroke="none"/>'
         f'<polyline points="{pts_str}" stroke="{color}" stroke-width="1.5" '
         f'fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
         f'</svg>'
+    )
+    p_start = _fmt_price(prices[0])
+    p_end   = _fmt_price(prices[-1])
+    price_row = (
+        f'<div style="display:flex;justify-content:space-between;'
+        f'font-size:9px;color:#666;padding:0 2px;margin-top:1px;line-height:1;">'
+        f'<span>{p_start}</span>'
+        f'<span style="color:{color};">{p_end}</span>'
+        f'</div>'
+    )
+    return (
+        f'<div style="display:inline-flex;flex-direction:column;align-items:stretch;">'
+        f'{svg}{price_row}</div>'
     )
 
 
@@ -413,7 +431,14 @@ def stock_row_html(r: dict, universe: dict, extra_map: dict,
     industry = pinfo.get("industry", "—")
     profile  = pinfo.get("profile", "—")
 
-    sparkline = make_sparkline(price_map.get(sym, []))
+    prices    = price_map.get(sym, [])
+    sparkline = make_sparkline(prices)
+    if len(prices) >= 2:
+        yoy_pct = (prices[-1] / prices[0] - 1) * 100
+        yoy_s   = f"{yoy_pct:+.1f}%"
+        yoy_col = "#3fb950" if yoy_pct >= 0 else "#e05252"
+    else:
+        yoy_s, yoy_col = "—", "#555"
 
     qm = quality_map.get(sym, {})
     roe    = qm.get("roe_annual")
@@ -432,6 +457,7 @@ def stock_row_html(r: dict, universe: dict, extra_map: dict,
         f'<td class="mono">{sym}</td>'
         f'<td class="nowrap">{name}</td>'
         f'<td class="sparkline-cell">{sparkline}</td>'
+        f'<td class="num" style="color:{yoy_col};font-weight:600;">{yoy_s}</td>'
         f'<td class="ctr"><span style="color:{idx_color};font-size:11px;">{index}</span></td>'
         f'<td class="ctr industry-cell">{industry}</td>'
         f'<td class="profile-cell">{profile}</td>'
@@ -576,6 +602,15 @@ tr:hover td {{ background:var(--surface2); }}
 .dist-bar {{ height:13px; border-radius:3px; min-width:2px; }}
 .dist-cnt {{ font-size:11px; color:var(--text-muted); white-space:nowrap; }}
 
+/* th tooltip */
+#th-tip {{
+  position:fixed; display:none; pointer-events:none; z-index:9999;
+  background:#1c2128; color:#e6edf3; border:1px solid #444d56;
+  border-radius:7px; padding:9px 13px; font-size:12px; font-weight:400;
+  line-height:1.6; white-space:pre-wrap; max-width:280px;
+  box-shadow:0 4px 18px rgba(0,0,0,0.55);
+}}
+
 /* filter bar */
 .filter-bar {{
   display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap;
@@ -690,22 +725,22 @@ tr:hover td {{ background:var(--surface2); }}
 <div class="filter-bar" id="filter-bar">
   <span class="filter-label">筛选</span>
   <label class="filter-item">行业
-    <input class="filter-input" type="text" data-col="4" data-op="text" placeholder="关键字">
+    <input class="filter-input" type="text" data-col="5" data-op="text" placeholder="关键字">
   </label>
   <label class="filter-item">营收同比 ≥
-    <input class="filter-input" type="number" data-col="6" data-op="min" placeholder="30">%
-  </label>
-  <label class="filter-item">净利同比 ≥
     <input class="filter-input" type="number" data-col="7" data-op="min" placeholder="30">%
   </label>
+  <label class="filter-item">净利同比 ≥
+    <input class="filter-input" type="number" data-col="8" data-op="min" placeholder="30">%
+  </label>
   <label class="filter-item">ROE年报 ≥
-    <input class="filter-input" type="number" data-col="9" data-op="min" placeholder="15">%
+    <input class="filter-input" type="number" data-col="10" data-op="min" placeholder="15">%
   </label>
   <label class="filter-item">资产负债率 ≤
-    <input class="filter-input" type="number" data-col="10" data-op="max" placeholder="65">%
+    <input class="filter-input" type="number" data-col="11" data-op="max" placeholder="65">%
   </label>
   <label class="filter-item">CFO质量 ≥
-    <input class="filter-input" type="number" data-col="11" data-op="min" placeholder="0.8">
+    <input class="filter-input" type="number" data-col="12" data-op="min" placeholder="0.8">
   </label>
   <button class="filter-reset" onclick="resetFilters()">重置</button>
   <span class="filter-count" id="filter-count">{cnt} / {cnt} 只</span>
@@ -713,21 +748,22 @@ tr:hover td {{ background:var(--surface2); }}
 <div class="table-scroll tall">
 <table id="stock-table">
   <thead><tr>
-    <th>代码</th>
-    <th>名称</th>
-    <th data-no-sort>走势</th>
-    <th class="ctr">指数</th>
-    <th class="ctr">行业</th>
-    <th>主营简介</th>
-    <th class="num">营收同比</th>
-    <th class="num">净利同比</th>
-    <th class="num">扣非净利同比</th>
-    <th class="num">ROE年报</th>
-    <th class="num">资产负债率</th>
-    <th class="num">CFO质量</th>
-    <th class="ctr">2期</th>
-    <th>增速分析</th>
-    <th>报告期</th>
+    <th data-tip="股票代码&#10;上交所：6开头 → .SH&#10;深交所：0/3开头 → .SZ">代码</th>
+    <th data-tip="股票简称（取前6字）">名称</th>
+    <th data-no-sort data-tip="近一年前复权日线走势&#10;下方显示：起始价（左）/ 最新价（右）&#10;数据来源：腾讯财经&#10;科创板(688)使用不复权日线">走势</th>
+    <th class="num" data-tip="近一年价格涨跌幅&#10;= (最新收盘价 ÷ 一年前收盘价 − 1) × 100%&#10;已做前复权处理，不含分红">年涨幅</th>
+    <th class="ctr" data-tip="所属指数成分股&#10;■ 沪深300  ■ 中证500  ■ 两者均有">指数</th>
+    <th class="ctr" data-tip="东方财富二级行业分类&#10;近似申万二级行业">行业</th>
+    <th data-tip="公司主营业务简述（前70字）&#10;来源：东方财富 F10">主营简介</th>
+    <th class="num" data-tip="最新单季营业收入同比增长率&#10;= (本季营收 − 去年同季营收) ÷ |去年同季营收| × 100%&#10;来源：东方财富 datacenter">营收同比</th>
+    <th class="num" data-tip="最新单季归母净利润同比增长率&#10;含非经常性损益（如资产处置收益等）&#10;来源：东方财富 datacenter">净利同比</th>
+    <th class="num" data-tip="扣除非经常性损益后净利润同比&#10;更真实反映主业盈利能力&#10;与净利同比差距 &gt;20pp 显示橙色警示&#10;来源：东方财富 datacenter">扣非净利同比</th>
+    <th class="num" data-tip="净资产收益率（Return on Equity）&#10;= 归母净利润 ÷ 归母净资产 × 100%&#10;取最新年报，绿色 ≥ 15%&#10;来源：同花顺财务摘要">ROE年报</th>
+    <th class="num" data-tip="资产负债率&#10;= 总负债 ÷ 总资产 × 100%&#10;衡量财务杠杆与偿债风险&#10;取最新期，红色 &gt; 65%&#10;来源：同花顺财务摘要">资产负债率</th>
+    <th class="num" data-tip="经营现金流质量（CFO Quality）&#10;= 每股经营现金流 ÷ 基本每股收益&#10;≥ 0.8 绿色：利润有现金支撑&#10;&lt; 0 红色：利润可能存在虚高&#10;取最新年报，来源：同花顺">CFO质量</th>
+    <th class="ctr" data-tip="近2期连续性检验&#10;✓ = 近2期营收和净利润同比均 ≥ 15%&#10;代表业绩增长具有持续性">2期</th>
+    <th data-tip="增速质量综合标签&#10;基于扣非净利润增速与毛利率变化&#10;综合判断主业增长驱动力">增速分析</th>
+    <th data-tip="最新财报报告期&#10;一季报(3-31) / 半年报(6-30)&#10;三季报(9-30) / 年报(12-31)">报告期</th>
   </tr></thead>
   <tbody>
 {all_rows}  </tbody>
@@ -837,6 +873,31 @@ function resetFilters() {{
 document.querySelectorAll('.filter-input').forEach(function(inp) {{
   inp.addEventListener('input', applyFilters);
 }});
+
+// ── 表头 tooltip ──────────────────────────────────────────────────────────────
+(function() {{
+  var tip = document.createElement('div');
+  tip.id = 'th-tip';
+  document.body.appendChild(tip);
+  document.querySelectorAll('th[data-tip]').forEach(function(th) {{
+    th.style.cursor = 'help';
+    th.addEventListener('mouseenter', function() {{
+      tip.textContent = th.dataset.tip;
+      tip.style.display = 'block';
+    }});
+    th.addEventListener('mousemove', function(e) {{
+      var x = e.clientX + 14;
+      var y = e.clientY + 14;
+      if (x + 290 > window.innerWidth) x = e.clientX - 290;
+      if (y + tip.offsetHeight + 10 > window.innerHeight) y = e.clientY - tip.offsetHeight - 10;
+      tip.style.left = x + 'px';
+      tip.style.top  = y + 'px';
+    }});
+    th.addEventListener('mouseleave', function() {{
+      tip.style.display = 'none';
+    }});
+  }});
+}})();
 </script>
 </body>
 </html>"""
