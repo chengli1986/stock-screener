@@ -138,13 +138,13 @@ _EM_HOLDERNUM_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
 def fetch_shareholders(symbol: str, exchange: str) -> dict:
-    """拉取股东人数 + 前十大流通股东。"""
-    # 股东人数（东方财富）
+    """拉取股东人数历史（近12期）+ 前十大流通股东。"""
+    # 股东人数（东方财富），取近12期季度数据
     params = {
         "reportName": "RPT_F10_EH_HOLDERNUM",
         "columns": "ALL",
         "filter": f'(SECURITY_CODE="{symbol}")',
-        "pageSize": 1,
+        "pageSize": 12,
         "sortColumns": "END_DATE",
         "sortTypes": "-1",
         "source": "WEB",
@@ -161,12 +161,28 @@ def fetch_shareholders(symbol: str, exchange: str) -> dict:
     if not d.get("success") or not (d.get("result") or {}).get("data"):
         raise ValueError(f"RPT_F10_EH_HOLDERNUM returned no data for {symbol}")
 
-    latest = d["result"]["data"][0]
+    rows = d["result"]["data"]
+    latest = rows[0]
     report_date = latest["END_DATE"][:10]
     total_count = int(latest["HOLDER_TOTAL_NUM"])
     count_change_pct = _safe(latest.get("TOTAL_NUM_RATIO"))
     if count_change_pct is not None:
         count_change_pct = round(count_change_pct, 1)
+
+    # 近12期历史（升序，旧→新）
+    holder_history = []
+    for row in reversed(rows):
+        cnt = _safe(row.get("HOLDER_TOTAL_NUM"))
+        if cnt is None:
+            continue
+        chg = _safe(row.get("TOTAL_NUM_RATIO"))
+        entry: dict = {
+            "date": row["END_DATE"][:10],
+            "count": int(cnt),
+        }
+        if chg is not None:
+            entry["change_pct"] = round(chg, 1)
+        holder_history.append(entry)
 
     # 前十大流通股东（akshare）
     df_sh = ak.stock_circulate_stock_holder(symbol=symbol)
@@ -188,6 +204,7 @@ def fetch_shareholders(symbol: str, exchange: str) -> dict:
         "report_date": report_date,
         "total_count": total_count,
         "count_change_pct": count_change_pct,
+        "holder_history": holder_history,
         "top10": top10,
     }
 
