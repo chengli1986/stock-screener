@@ -1,0 +1,13 @@
+[
+  {
+    "symbol": "300308",
+    "exchange": "SZ",
+    "name": "中际旭创",
+    "snapshot_key": "300308",
+    "page": "/innolight-300308.html",
+    "consensus": {
+      "2026E": { "label": "2026E", "profit_yuan": 28500000000 },
+      "2027E": { "label": "2027E", "profit_yuan": 48000000000 }
+    }
+  }
+]
