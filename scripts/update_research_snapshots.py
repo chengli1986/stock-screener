@@ -74,8 +74,12 @@ def fetch_em_data(symbol: str, exchange: str) -> dict:
 _TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 
-def fetch_year_return(symbol: str, exchange: str) -> float:
-    """计算近 252 交易日（约 1 年）累计涨幅（百分比）。"""
+def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
+    """获取近一年前复权 OHLCV，计算年涨幅 + MA20 + 波动率 + 量比。
+    腾讯 K 线行格式: [date, open, close, high, low, volume, amount, ...]
+    """
+    import math
+
     mkt = "sh" if exchange == "SH" else "sz"
     code = f"{mkt}{symbol}"
     end_dt = datetime.now(BJT)
@@ -90,13 +94,42 @@ def fetch_year_return(symbol: str, exchange: str) -> float:
     d = r.json()
     stock_data = d.get("data", {}).get(code, {})
     rows = stock_data.get("qfqday") or stock_data.get("day", [])
-    if len(rows) < 2:
+    if len(rows) < 60:
         raise ValueError(f"Too few K-line rows for {symbol}: {len(rows)}")
-    prices = [float(row[2]) for row in rows if len(row) >= 3]
-    # 取前 252 根（从最老到最新），如果不足 252 取全部
-    window = prices[-252:] if len(prices) >= 252 else prices
+
+    closes = [float(row[2]) for row in rows if len(row) >= 3]
+    volumes = [float(row[5]) for row in rows if len(row) >= 6]
+
+    # 1 年涨幅
+    window = closes[-252:] if len(closes) >= 252 else closes
     year_return_pct = round((window[-1] / window[0] - 1) * 100, 1)
-    return year_return_pct
+
+    # MA20（当日 + 5 日前，判断斜率）
+    ma20 = round(sum(closes[-20:]) / 20, 2) if len(closes) >= 20 else None
+    ma20_5d = round(sum(closes[-25:-5]) / 20, 2) if len(closes) >= 25 else None
+    ma20_slope = "up" if (ma20 and ma20_5d and ma20 > ma20_5d) else "down"
+
+    # 60 日年化波动率（对数收益率标准差 × √252）
+    vol_60d_ann_pct: float | None = None
+    if len(closes) >= 61:
+        lr = [math.log(closes[-60 + i + 1] / closes[-60 + i]) for i in range(59)]
+        daily_std = math.sqrt(sum(x * x for x in lr) / len(lr))
+        vol_60d_ann_pct = round(daily_std * math.sqrt(252) * 100, 1)
+
+    # 5 日 / 60 日量比
+    vol_ratio_5_60: float | None = None
+    if len(volumes) >= 60:
+        avg5 = sum(volumes[-5:]) / 5
+        avg60 = sum(volumes[-60:]) / 60
+        vol_ratio_5_60 = round(avg5 / avg60, 2) if avg60 > 0 else None
+
+    return {
+        "year_return_pct": year_return_pct,
+        "ma20": ma20,
+        "ma20_slope": ma20_slope,
+        "vol_60d_ann_pct": vol_60d_ann_pct,
+        "vol_ratio_5_60": vol_ratio_5_60,
+    }
 
 
 # ── snapshot writer ─────────────────────────────────────────────────────────────
@@ -112,7 +145,7 @@ def build_snapshot(stock: dict) -> dict:
     market_cap_yuan = em["market_cap_yuan"]
 
     print(f"  [{symbol}] 拉取腾讯 K 线...", flush=True)
-    year_return_pct = fetch_year_return(symbol, exchange)
+    ohlcv = fetch_ohlcv_data(symbol, exchange)
 
     market_cap_yi = round(market_cap_yuan / 1e8)  # 转换为亿
     as_of = datetime.now(BJT).strftime("%Y-%m-%d")
@@ -129,8 +162,14 @@ def build_snapshot(stock: dict) -> dict:
         "as_of": as_of,
         "price_yuan": price_yuan,
         "market_cap_yi": market_cap_yi,
-        "year_return_pct": year_return_pct,
+        "year_return_pct": ohlcv["year_return_pct"],
         "pe_estimates": pe_estimates,
+        "technical": {
+            "ma20": ohlcv["ma20"],
+            "ma20_slope": ohlcv["ma20_slope"],
+            "vol_60d_ann_pct": ohlcv["vol_60d_ann_pct"],
+            "vol_ratio_5_60": ohlcv["vol_ratio_5_60"],
+        },
         "updated_at": datetime.now(BJT).isoformat(),
     }
     return snapshot
