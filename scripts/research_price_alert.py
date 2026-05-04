@@ -70,7 +70,6 @@ def _send_email(env: dict, subject: str, html_body: str) -> None:
     to_addr = env.get("MAIL_TO", smtp_user)
 
     msg = MIMEMultipart("alternative")
-    msg["MIME-Version"] = "1.0"
     msg["Subject"] = subject
     msg["From"] = smtp_user
     msg["To"] = to_addr
