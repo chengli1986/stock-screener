@@ -8,6 +8,20 @@
     "consensus": {
       "2026E": { "label": "2026E", "profit_yuan": 28500000000 },
       "2027E": { "label": "2027E", "profit_yuan": 48000000000 }
-    }
+    },
+    "price_alerts": [
+      {
+        "label": "次优买点（基准场景）",
+        "threshold": 800,
+        "pe_band": "28–31x 2026E",
+        "cooldown_days": 3
+      },
+      {
+        "label": "最佳买点（等待调整）",
+        "threshold": 700,
+        "pe_band": "25–28x 2026E",
+        "cooldown_days": 3
+      }
+    ]
   }
 ]
