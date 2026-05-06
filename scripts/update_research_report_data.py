@@ -9,7 +9,7 @@ update_research_report_data.py — 从完整年度报告 PDF + API 提取财报�
 4. 用 Claude Haiku 提取：员工结构、地区收入分布、各代产品出货情况
 5. 写出 docs-site/data/{key}-report-data.json 并部署
 
-触发时机：季报披露后人工运行，或每季度定时；数据更新比财务摘要低频。
+触发时机：每年 5 月 5 日自动运行（沪深交易所 4 月 30 日年报截止后 5 天），或年报季后人工运行。
 脚本任意股票失败都 exit(1)，由 cron-wrapper 触发告警邮件。
 """
 
