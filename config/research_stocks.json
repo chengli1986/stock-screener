@@ -23,5 +23,30 @@
         "cooldown_days": 3
       }
     ]
+  },
+  {
+    "symbol": "688256",
+    "exchange": "SH",
+    "name": "寒武纪",
+    "snapshot_key": "688256",
+    "page": "/cambricon-688256.html",
+    "consensus": {
+      "2026E": { "label": "2026E", "profit_yuan": 4500000000 },
+      "2027E": { "label": "2027E", "profit_yuan": 7500000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "均衡买点（120x 2026E）",
+        "threshold": 1280,
+        "pe_band": "120x 2026E",
+        "cooldown_days": 3
+      },
+      {
+        "label": "最佳买点（100x 2026E）",
+        "threshold": 1067,
+        "pe_band": "100x 2026E",
+        "cooldown_days": 3
+      }
+    ]
   }
 ]
