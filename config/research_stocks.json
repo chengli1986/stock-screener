@@ -48,5 +48,25 @@
         "cooldown_days": 3
       }
     ]
+  },
+  {
+    "symbol": "688702",
+    "exchange": "SH",
+    "name": "盛科通信",
+    "snapshot_key": "688702",
+    "page": "/shengke-688702.html",
+    "valuation_mode": "ps",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 2000000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 3000000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "基准买点（80x 2026E PS）",
+        "threshold": 390,
+        "pe_band": "80x 2026E PS",
+        "cooldown_days": 3
+      }
+    ]
   }
 ]

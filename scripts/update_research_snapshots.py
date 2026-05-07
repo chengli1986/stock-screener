@@ -200,11 +200,16 @@ def build_snapshot(stock: dict) -> dict:
     market_cap_yi = round(market_cap_yuan / 1e8)  # 转换为亿
     as_of = datetime.now(BJT).strftime("%Y-%m-%d")
 
+    valuation_mode = stock.get("valuation_mode", "pe")
     pe_estimates: dict[str, float] = {}
+    ps_estimates: dict[str, float] = {}
     for label, entry in consensus.items():
-        profit_yuan = entry["profit_yuan"]
-        pe = round(market_cap_yuan / profit_yuan, 1)
-        pe_estimates[label] = pe
+        if valuation_mode == "ps":
+            revenue_yuan = entry["revenue_yuan"]
+            ps_estimates[label] = round(market_cap_yuan / revenue_yuan, 1)
+        else:
+            profit_yuan = entry["profit_yuan"]
+            pe_estimates[label] = round(market_cap_yuan / profit_yuan, 1)
 
     snapshot = {
         "symbol": symbol,
@@ -214,6 +219,7 @@ def build_snapshot(stock: dict) -> dict:
         "market_cap_yi": market_cap_yi,
         "year_return_pct": ohlcv["year_return_pct"],
         "pe_estimates": pe_estimates,
+        "ps_estimates": ps_estimates,
         "technical": {
             "ma20": ohlcv["ma20"],
             "ma20_slope": ohlcv["ma20_slope"],
@@ -262,8 +268,11 @@ def main() -> int:
             market_cap_yi = snapshot["market_cap_yi"]
             price = snapshot["price_yuan"]
             yr = snapshot["year_return_pct"]
-            pe_str = "  ".join(f"{k}={v}x" for k, v in snapshot["pe_estimates"].items())
-            print(f"  [{symbol}] ✓  ¥{price}  市值{market_cap_yi}亿  1年{yr:+.1f}%  {pe_str}")
+            if snapshot["ps_estimates"]:
+                val_str = "  ".join(f"{k}={v}x PS" for k, v in snapshot["ps_estimates"].items())
+            else:
+                val_str = "  ".join(f"{k}={v}x" for k, v in snapshot["pe_estimates"].items())
+            print(f"  [{symbol}] ✓  ¥{price}  市值{market_cap_yi}亿  1年{yr:+.1f}%  {val_str}")
         except Exception as e:
             msg = f"[{symbol}] FAILED: {e}"
             print(f"ERROR: {msg}", file=sys.stderr)
