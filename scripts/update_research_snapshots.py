@@ -22,6 +22,56 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+# ── HTTP retry helper ──────────────────────────────────────────────────────────
+
+
+def _get_with_retry(
+    url: str,
+    *,
+    params: dict | None = None,
+    headers: dict | None = None,
+    timeout: int = 15,
+    max_attempts: int = 3,
+    backoff: float = 1.0,
+    label: str = "",
+) -> requests.Response:
+    """HTTP GET with retry on 5xx and network errors.
+
+    4xx fails immediately (client-side bug shouldn't be retried). 5xx +
+    ConnectionError + Timeout trigger exponential backoff. Last-attempt
+    failure propagates the original exception. ``label`` shows up in retry
+    warnings, useful when multiple stocks/endpoints share this code path.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt >= max_attempts:
+                raise
+            wait = backoff * (2 ** (attempt - 1))
+            print(
+                f"WARN: {label} {type(e).__name__}, retrying "
+                f"({attempt + 1}/{max_attempts}) in {wait:.1f}s...",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(wait)
+            continue
+        if r.status_code >= 500 and attempt < max_attempts:
+            wait = backoff * (2 ** (attempt - 1))
+            print(
+                f"WARN: {label} HTTP {r.status_code}, retrying "
+                f"({attempt + 1}/{max_attempts}) in {wait:.1f}s...",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r
+    raise RuntimeError("_get_with_retry: unreachable")
+
+
 # ── paths ──────────────────────────────────────────────────────────────────────
 REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 CONFIG_FILE = REPO_DIR / "config" / "research_stocks.json"
@@ -50,13 +100,13 @@ def em_secid(symbol: str, exchange: str) -> str:
 def fetch_em_data(symbol: str, exchange: str) -> dict:
     """获取东方财富 push2 实时行情。返回 price_yuan, market_cap_yuan。"""
     secid = em_secid(symbol, exchange)
-    r = requests.get(
+    r = _get_with_retry(
         _EM_URL,
         params={"secid": secid, "fields": _EM_FIELDS, "ut": _EM_UT},
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=15,
+        label=f"[{symbol}] push2",
     )
-    r.raise_for_status()
     data = r.json().get("data")
     if not data:
         raise ValueError(f"push2 returned empty data for {symbol}")
@@ -84,13 +134,13 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
     code = f"{mkt}{symbol}"
     end_dt = datetime.now(BJT)
     start_dt = end_dt - timedelta(days=366)
-    r = requests.get(
+    r = _get_with_retry(
         _TENCENT_URL,
         params={"param": f"{code},day,{start_dt:%Y-%m-%d},{end_dt:%Y-%m-%d},300,qfq"},
         headers={"Referer": "https://gu.qq.com/"},
         timeout=15,
+        label=f"[{symbol}] tencent-kline",
     )
-    r.raise_for_status()
     d = r.json()
     stock_data = d.get("data", {}).get(code, {})
     rows = stock_data.get("qfqday") or stock_data.get("day", [])
