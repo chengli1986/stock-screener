@@ -85,9 +85,9 @@ BJT = timezone(timedelta(hours=8))
 # ── East Money push2 ───────────────────────────────────────────────────────────
 _EM_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 _EM_UT = "fa5fd1943c7b386f172d6893dbfba10b"
-_EM_FIELDS = "f57,f58,f43,f116,f162,f163,f169,f47"
+_EM_FIELDS = "f57,f58,f43,f116,f162,f163,f170,f47"
 # f57=symbol, f58=name, f43=price(×100), f116=市值(元), f162=PE-TTM-s(×100), f163=PE-TTM-d(×100)
-# f169=涨跌幅(×100), f47=成交量(手)
+# f170=涨跌幅%(×100), f47=成交量(手)
 
 
 def em_secid(symbol: str, exchange: str) -> str:
@@ -118,8 +118,10 @@ def fetch_em_data(symbol: str, exchange: str) -> dict:
         raise ValueError(f"push2 missing price or market_cap for {symbol}: f43={raw_price}, f116={market_cap}")
 
     price_yuan = round(raw_price / 100, 2)
-    raw_change = data.get("f169") or 0
-    raw_vol = data.get("f47") or 0
+    _vc = data.get("f170")
+    raw_change = int(_vc) if isinstance(_vc, (int, float)) else 0
+    _vv = data.get("f47")
+    raw_vol = int(_vv) if isinstance(_vv, (int, float)) else 0
     change_pct = round(raw_change / 100, 2)
     vol_wan_shou = round(raw_vol / 10000, 1)
     return {
