@@ -99,26 +99,39 @@ for sym, mkt, label in [("000333", "sz", "main-board"), ("688256", "sh", "STAR-m
         issues.append(f"tencent {label}({sym}): {e}")
     time.sleep(0.3)
 
-# 2. THS 质量指标 — 贵州茅台(600519)，验证年报三字段
-try:
-    df = ak.stock_financial_abstract_ths(symbol="600519", indicator="按报告期")
-    df = df.sort_values("报告期", ascending=False)
-    annual = df[df["报告期"].str.endswith("-12-31")]
-    if annual.empty:
-        issues.append("ths(600519): no annual report row found")
-    else:
+# 2. THS 质量指标 — 贵州茅台(600519)，验证年报三字段（3次重试防止 akshare 瞬时抖动）
+import math
+ths_ok = False
+ths_last_err = None
+for _attempt in range(3):
+    try:
+        df = ak.stock_financial_abstract_ths(symbol="600519", indicator="按报告期")
+        df = df.sort_values("报告期", ascending=False)
+        annual = df[df["报告期"].str.endswith("-12-31")]
+        if annual.empty:
+            ths_last_err = "no annual report row found"
+            break
         row = annual.iloc[0]
         roe  = row.get("净资产收益率")
         debt = row.get("资产负债率")
         ocf  = row.get("每股经营现金流")
+        # 用 pd.isna 覆盖 NaN / None / pd.NA；也检查空字符串
+        import pandas as pd
         missing = [k for k, v in [("ROE", roe), ("debt_ratio", debt), ("CFO", ocf)]
-                   if v is False or v is None]
+                   if v is None or (isinstance(v, float) and math.isnan(v))
+                   or (hasattr(pd, 'isna') and pd.isna(v)) or v == ""]
         if missing:
-            issues.append(f"ths(600519) missing fields: {missing}")
-        else:
-            print(f"  ths(600519): ROE={roe} debt={debt} OCF={ocf} OK")
-except Exception as e:
-    issues.append(f"ths(600519): {e}")
+            ths_last_err = f"missing fields: {missing}"
+            break
+        print(f"  ths(600519): ROE={roe} debt={debt} OCF={ocf} OK")
+        ths_ok = True
+        break
+    except Exception as e:
+        ths_last_err = str(e)
+        if _attempt < 2:
+            time.sleep(5 * (2 ** _attempt))
+if not ths_ok:
+    issues.append(f"ths(600519): {ths_last_err}")
 
 if issues:
     for msg in issues:
