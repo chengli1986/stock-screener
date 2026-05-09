@@ -99,17 +99,33 @@ for sym, mkt, label in [("000333", "sz", "main-board"), ("688256", "sh", "STAR-m
         issues.append(f"tencent {label}({sym}): {e}")
     time.sleep(0.3)
 
-# 2. THS 质量指标 — 贵州茅台(600519)，验证年报三字段（3次重试防止 akshare 瞬时抖动）
+# 2. THS 质量指标 — 贵州茅台(600519)，验证年报三字段
+# 4 次重试 + 5s/15s/45s 退避（~65s 窗口），跨过 THS 端 IncompleteRead 瞬时抖动；
+# 5-09 事故：旧 5/10/20 窗口 ~25s，3 次都打中同一波 IncompleteRead。
+# 网络层错误 vs 逻辑错误分别 tag，逻辑错误立即退出（重试无意义）。
 import math
+import requests.exceptions as rex
+from http.client import IncompleteRead as HttpIncompleteRead
+try:
+    from urllib3.exceptions import IncompleteRead as Urllib3IncompleteRead
+except ImportError:
+    Urllib3IncompleteRead = HttpIncompleteRead
+NET_TRANSIENT = (
+    Urllib3IncompleteRead, HttpIncompleteRead,
+    rex.ConnectionError, rex.ChunkedEncodingError,
+    rex.ReadTimeout, rex.ConnectTimeout,
+)
+THS_BACKOFFS = [5, 15, 45]  # before attempts 2/3/4
+
 ths_ok = False
 ths_last_err = None
-for _attempt in range(3):
+for _attempt in range(4):
     try:
         df = ak.stock_financial_abstract_ths(symbol="600519", indicator="按报告期")
         df = df.sort_values("报告期", ascending=False)
         annual = df[df["报告期"].str.endswith("-12-31")]
         if annual.empty:
-            ths_last_err = "no annual report row found"
+            ths_last_err = "logic: no annual report row found"
             break
         row = annual.iloc[0]
         roe  = row.get("净资产收益率")
@@ -121,15 +137,17 @@ for _attempt in range(3):
                    if v is None or (isinstance(v, float) and math.isnan(v))
                    or (hasattr(pd, 'isna') and pd.isna(v)) or v == ""]
         if missing:
-            ths_last_err = f"missing fields: {missing}"
+            ths_last_err = f"logic: missing fields: {missing}"
             break
         print(f"  ths(600519): ROE={roe} debt={debt} OCF={ocf} OK")
         ths_ok = True
         break
     except Exception as e:
-        ths_last_err = str(e)
-        if _attempt < 2:
-            time.sleep(5 * (2 ** _attempt))
+        is_transient = isinstance(e, NET_TRANSIENT) or "IncompleteRead" in str(e) or "Connection broken" in str(e)
+        tag = "net" if is_transient else "other"
+        ths_last_err = f"{tag} (attempt {_attempt+1}/4): {e}"
+        if _attempt < 3:
+            time.sleep(THS_BACKOFFS[_attempt])
 if not ths_ok:
     issues.append(f"ths(600519): {ths_last_err}")
 
