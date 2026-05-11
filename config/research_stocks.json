@@ -37,13 +37,13 @@
     "price_alerts": [
       {
         "label": "均衡买点（120x 2026E）",
-        "threshold": 1280,
+        "threshold": 859,
         "pe_band": "120x 2026E",
         "cooldown_days": 3
       },
       {
         "label": "最佳买点（100x 2026E）",
-        "threshold": 1067,
+        "threshold": 716,
         "pe_band": "100x 2026E",
         "cooldown_days": 3
       }
