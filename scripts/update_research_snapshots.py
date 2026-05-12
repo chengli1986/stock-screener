@@ -218,12 +218,10 @@ def build_snapshot(stock: dict) -> dict:
     pe_estimates: dict[str, float] = {}
     ps_estimates: dict[str, float] = {}
     for label, entry in consensus.items():
-        if valuation_mode == "ps":
-            revenue_yuan = entry["revenue_yuan"]
-            ps_estimates[label] = round(market_cap_yuan / revenue_yuan, 1)
-        else:
-            profit_yuan = entry["profit_yuan"]
-            pe_estimates[label] = round(market_cap_yuan / profit_yuan, 1)
+        if valuation_mode in ("ps", "both") and "revenue_yuan" in entry:
+            ps_estimates[label] = round(market_cap_yuan / entry["revenue_yuan"], 1)
+        if valuation_mode in ("pe", "both") and "profit_yuan" in entry:
+            pe_estimates[label] = round(market_cap_yuan / entry["profit_yuan"], 1)
 
     snapshot = {
         "symbol": symbol,

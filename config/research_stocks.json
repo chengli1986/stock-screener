@@ -75,10 +75,10 @@
     "name": "源杰科技",
     "snapshot_key": "688498",
     "page": "/yuanjie-688498.html",
-    "valuation_mode": "ps",
+    "valuation_mode": "both",
     "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 1400000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 3500000000 }
+      "2026E": { "label": "2026E", "revenue_yuan": 1400000000, "profit_yuan": 700000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 3500000000, "profit_yuan": 1400000000 }
     },
     "price_alerts": [
       {
