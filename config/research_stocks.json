@@ -68,5 +68,57 @@
         "cooldown_days": 3
       }
     ]
+  },
+  {
+    "symbol": "688498",
+    "exchange": "SH",
+    "name": "源杰科技",
+    "snapshot_key": "688498",
+    "page": "/yuanjie-688498.html",
+    "valuation_mode": "ps",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 1400000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 3500000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "均衡买点（60x 2026E PS）",
+        "threshold": 977,
+        "pe_band": "60x 2026E PS",
+        "cooldown_days": 3
+      },
+      {
+        "label": "最佳买点（45x 2026E PS）",
+        "threshold": 733,
+        "pe_band": "45x 2026E PS",
+        "cooldown_days": 3
+      }
+    ]
+  },
+  {
+    "symbol": "688048",
+    "exchange": "SH",
+    "name": "长光华芯",
+    "snapshot_key": "688048",
+    "page": "/changguang-688048.html",
+    "valuation_mode": "ps",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 638000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 870000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "均衡买点（80x 2026E PS）",
+        "threshold": 289,
+        "pe_band": "80x 2026E PS",
+        "cooldown_days": 3
+      },
+      {
+        "label": "最佳买点（60x 2026E PS）",
+        "threshold": 217,
+        "pe_band": "60x 2026E PS",
+        "cooldown_days": 3
+      }
+    ]
   }
 ]
