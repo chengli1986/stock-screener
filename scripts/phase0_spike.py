@@ -239,6 +239,36 @@ def _load_done_symbols(path: str, key: str = "symbol_norm") -> set[str]:
 
 # ── step 1: universe generation ───────────────────────────────────────────────
 
+# akshare 不暴露 timeout 参数；中证指数官网 API 偶发挂起（2026-05-18 02:00 UTC 复现
+# 一次：5 min 后被 cron-wrapper SIGKILL，artifacts 零产出）。用 daemon 线程 + join
+# 超时让 CSI universe 拉取 fail-fast，下游 cron-wrapper 在 ~30s 收到 exit=1，而
+# 不是 300s 超时告警。
+def _fetch_csi_universe(timeout_s: int = 30):
+    import threading
+    import akshare as ak
+
+    result: dict = {}
+    error: dict = {}
+
+    def _worker() -> None:
+        try:
+            result["df300"] = ak.index_stock_cons_csindex("000300")
+            result["df500"] = ak.index_stock_cons_csindex("000905")
+        except Exception as e:
+            error["e"] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        raise TimeoutError(
+            f"akshare CSI 300/500 fetch exceeded {timeout_s}s — upstream csindex.com.cn likely hung"
+        )
+    if "e" in error:
+        raise error["e"]
+    return result["df300"], result["df500"]
+
+
 def build_universe(market_filter: str | None, limit: int | None,
                    dry_run: bool) -> list[dict]:
     """
@@ -249,16 +279,13 @@ def build_universe(market_filter: str | None, limit: int | None,
 
     Returns list of row dicts matching UNIVERSE_FIELDS.
     """
-    import akshare as ak
-
     rows: list[dict] = []
     now_bjt = datetime.now(BJT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
     if market_filter != "hk":
-        print("[universe] Fetching CSI 300 from akshare...", flush=True)
-        df300 = ak.index_stock_cons_csindex("000300")
-        print(f"[universe] Fetching CSI 500 from akshare...", flush=True)
-        df500 = ak.index_stock_cons_csindex("000905")
+        print("[universe] Fetching CSI 300+500 from akshare (30s hard timeout)...", flush=True)
+        df300, df500 = _fetch_csi_universe(timeout_s=30)
+        print(f"[universe] CSI 300={len(df300)} CSI 500={len(df500)} OK", flush=True)
 
         seen: set[str] = set()
         for df, source in [(df300, "csi300"), (df500, "csi500")]:
