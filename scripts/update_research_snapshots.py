@@ -159,7 +159,9 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
     if len(rows) < 60:
         raise ValueError(f"Too few K-line rows for {symbol}: {len(rows)}")
 
-    closes = [float(row[2]) for row in rows if len(row) >= 3]
+    closes  = [float(row[2]) for row in rows if len(row) >= 3]
+    highs   = [float(row[3]) for row in rows if len(row) >= 5]
+    lows    = [float(row[4]) for row in rows if len(row) >= 5]
     volumes = [float(row[5]) for row in rows if len(row) >= 6]
 
     # 1 年涨幅
@@ -185,12 +187,20 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
         avg60 = sum(volumes[-60:]) / 60
         vol_ratio_5_60 = round(avg5 / avg60, 2) if avg60 > 0 else None
 
+    # 52 周（最近252交易日）高低
+    win_h = highs[-252:] if len(highs) >= 252 else highs
+    win_l = lows[-252:]  if len(lows)  >= 252 else lows
+    week52_high = round(max(win_h), 2) if win_h else None
+    week52_low  = round(min(win_l), 2) if win_l else None
+
     return {
         "year_return_pct": year_return_pct,
         "ma20": ma20,
         "ma20_slope": ma20_slope,
         "vol_60d_ann_pct": vol_60d_ann_pct,
         "vol_ratio_5_60": vol_ratio_5_60,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
     }
 
 
@@ -239,6 +249,8 @@ def build_snapshot(stock: dict) -> dict:
             "ma20_slope": ohlcv["ma20_slope"],
             "vol_60d_ann_pct": ohlcv["vol_60d_ann_pct"],
             "vol_ratio_5_60": ohlcv["vol_ratio_5_60"],
+            "week52_high": ohlcv["week52_high"],
+            "week52_low": ohlcv["week52_low"],
         },
         "updated_at": datetime.now(BJT).isoformat(),
     }
