@@ -1,0 +1,12 @@
+{
+  "_comment": "Per-report peer market-data registry for §6 同业横向对比 table hydration. Fetched via Tencent qt (price+market_cap) + Tencent K-line (1yr return). Currency CNY for A-share, HKD for HK.",
+  "688256": {
+    "table_label": "AI 加速芯片同业市值（自动刷新）",
+    "peers": [
+      {"name": "海光信息", "code": "688041", "tencent": "sh688041", "market": "科创板", "currency": "CNY"},
+      {"name": "沐曦股份", "code": "688802", "tencent": "sh688802", "market": "科创板", "currency": "CNY"},
+      {"name": "摩尔线程", "code": "688795", "tencent": "sh688795", "market": "科创板", "currency": "CNY"},
+      {"name": "壁仞科技", "code": "06082", "tencent": "hk06082", "market": "港股主板", "currency": "HKD"}
+    ]
+  }
+}
