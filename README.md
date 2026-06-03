@@ -285,6 +285,7 @@ flowchart LR
 
 - Python 3.12, `~/stock-env/` venv
 - Data: East Money push2 + akshare + Longbridge CLI (HK) + Tencent (fallback)
+  - **Note (2026-06-03)**: push2 overseas edge nodes return 502 for this EC2 since 2026-06-02 (domestic access unaffected). Research snapshots switched to Tencent qt primary + push2 fallback (`5c7167e`); Phase 0 fundamentals fetcher (`phase0_spike.py`) still push2-dependent — canary alerts expected until migrated.
 - Technical analysis: pandas-ta
 - LLM: GPT-4.1-mini (sentiment batch) + Gemini 2.5 Pro (reports) with fallback chain
 - Storage: JSONL + SQLite
@@ -297,6 +298,8 @@ flowchart LR
 **Strategy posture**: current Layer 1 4-rule set is right-side trend confirmation by design. User's true preference tilts left-side dislocation — deferred as M1.5 channel, merged in Layer 2 via `entry_pathway` tag.
 
 **Daily API canary** (since 2026-04-25): `scripts/canary_check.sh` runs 06:15 BJT via `~/cron-wrapper.sh`, executes `phase0_spike.py --limit 15 --workers 1`, writes to `artifacts/canary-latest/`. Pass = universe == 15 + ohlcv ≥ 14 + fundamentals ≥ 14. Failure → email alert. Verifies akshare / Longbridge / East Money all healthy without daily-running the 74-min full pipeline. Will be re-evaluated once Layer 1 Weekly cron lands.
+
+**Research stock snapshots** (since 2026-05-03): `scripts/update_research_snapshots.py` refreshes price / market cap / dynamic PE(PS) / technicals for stocks registered in `config/research_stocks.json`, publishing to docs.sinostor.com.cn research pages. Runs Mon–Fri 15:30 BJT via `cron-wrapper --name research-snapshots`. **Quote source (since 2026-06-03, `5c7167e`)**: Tencent qt.gtimg.cn primary + East Money push2 fallback — push2 overseas edges started returning 502 on 2026-06-02 (verified server-side block: same request succeeds from a domestic IP). STAR-board (688) volume comes back in shares, other boards in lots; the parser normalizes both to 万手. **Tests**: `tests/test_update_research_snapshots.py`, 16 unit tests with real captured qt fixtures.
 
 ### Design artifacts
 
