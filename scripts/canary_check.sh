@@ -1,6 +1,6 @@
 #!/bin/bash
 # Daily canary for stock-screener: runs phase0_spike.py --limit 15 to verify
-# the 3 upstream data APIs (akshare CSI / Longbridge OHLCV / East Money push2)
+# the 3 upstream data APIs (akshare CSI / Longbridge OHLCV / East Money push2delay)
 # are still healthy, without overwriting the full-run baseline.
 #
 # Output goes to artifacts/canary-latest/ (separate dir via PHASE0_ARTIFACTS_SUBDIR).

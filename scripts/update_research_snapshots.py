@@ -83,8 +83,10 @@ DEPLOY_DATA_DIR = pathlib.Path("/var/www/overview/data")
 
 BJT = timezone(timedelta(hours=8))
 
-# ── East Money push2 ───────────────────────────────────────────────────────────
-_EM_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+# ── East Money push2delay ──────────────────────────────────────────────────────
+# push2delay 而非 push2：push2 海外边缘节点 2026-06-02 起对本 EC2 返回 502；
+# push2delay 字段与 push2 逐字节一致（已对照国内 IP 验证），且未封海外。
+_EM_URL = "https://push2delay.eastmoney.com/api/qt/stock/get"
 _EM_UT = "fa5fd1943c7b386f172d6893dbfba10b"
 _EM_FIELDS = "f57,f58,f43,f116,f162,f163,f170,f47"
 # f57=symbol, f58=name, f43=price(×100), f116=市值(元), f162=PE-TTM-s(×100), f163=PE-TTM-d(×100)
@@ -100,7 +102,7 @@ def em_secid(symbol: str, exchange: str) -> str:
 
 
 def fetch_em_data(symbol: str, exchange: str) -> dict:
-    """获取东方财富 push2 实时行情。返回 price_yuan, market_cap_yuan。"""
+    """获取东方财富 push2delay 行情（备源）。返回 price_yuan, market_cap_yuan。"""
     secid = em_secid(symbol, exchange)
     r = _get_with_retry(
         _EM_URL,

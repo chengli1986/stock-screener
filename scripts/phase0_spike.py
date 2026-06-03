@@ -5,7 +5,9 @@ Phase 0 Data Spike — answers: what data can we get, what can't we get, why, ho
 Pipeline (run in order):
   1. Universe  → artifacts/phase0/universe.csv       (§A 8-field schema)
   2. OHLCV     → artifacts/phase0/ohlcv.csv          (Longbridge kline)
-  3. Fundamentals → artifacts/phase0/fundamentals.jsonl  (East Money push2, §B tri-state)
+  3. Fundamentals → artifacts/phase0/fundamentals.jsonl  (East Money push2delay, §B tri-state)
+     (2026-06-03: push2 → push2delay — push2 overseas edges return 502 for this
+      EC2 since 2026-06-02; push2delay serves identical fields and is not blocked)
   4. Report    → artifacts/phase0/report.json + coverage_report.md + timing.csv
 
 Usage:
@@ -429,8 +431,13 @@ def run_ohlcv(universe: list[dict], force: bool, workers: int) -> list[dict]:
 
 def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
     """
-    Fetch fundamentals via East Money push2. Returns fundamentals record.
+    Fetch fundamentals via East Money push2delay. Returns fundamentals record.
     Uses §B tri-state: available / missing_expected / fetch_error.
+
+    Host is push2delay.eastmoney.com (NOT push2): push2 overseas edges return
+    502 for this EC2 since 2026-06-02. push2delay serves byte-identical
+    fundamentals fields (verified against real push2 via domestic IP) — the
+    "delay" only affects realtime price, irrelevant for quarterly fundamentals.
 
     NOTE (Phase 0/1 diagnostic-precision tradeoff): when the API returns
     0.0 for a field that should have a value, this is classified the same
@@ -444,7 +451,7 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
 
     t0 = time.monotonic()
     secid = em_secid(symbol_norm)
-    url = "https://push2.eastmoney.com/api/qt/stock/get"
+    url = "https://push2delay.eastmoney.com/api/qt/stock/get"
     params = {
         "secid": secid,
         "fields": EM_FIELDS,
