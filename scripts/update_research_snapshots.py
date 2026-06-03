@@ -3,7 +3,8 @@
 update_research_snapshots.py — 每日快照更新脚本
 
 每个在 config/research_stocks.json 中注册的研究股票：
-1. 通过东方财富 push2 获取最新收盘价、总市值
+1. 通过腾讯 qt 实时行情（主）/ 东方财富 push2（备）获取最新收盘价、总市值
+   （2026-06-02 起 push2 海外边缘节点对本 EC2 返回 502，国内访问正常，故腾讯为主源）
 2. 通过腾讯财经 K 线获取近 252 交易日收盘价并计算 1 年涨幅
 3. 用市值除以各期共识净利润，计算动态 PE
 4. 写出 docs-site/data/{key}-snapshot.json
@@ -132,6 +133,76 @@ def fetch_em_data(symbol: str, exchange: str) -> dict:
     }
 
 
+# ── Tencent qt 实时行情 ─────────────────────────────────────────────────────────
+_QT_URL = "https://qt.gtimg.cn/q={code}"
+# ~分隔字段: [3]=现价, [32]=涨跌幅%, [36]=成交量, [45]=总市值(亿)
+# 成交量单位: 科创板(688)=股, 其他板块=手（2026-06-03 用换手率字段交叉验证）
+
+
+def qt_code(symbol: str, exchange: str) -> str:
+    if exchange == "SH":
+        return f"sh{symbol}"
+    if exchange == "SZ":
+        return f"sz{symbol}"
+    raise ValueError(f"Unknown exchange: {exchange}")
+
+
+def fetch_qt_data(symbol: str, exchange: str) -> dict[str, float]:
+    """获取腾讯 qt 实时行情。返回结构与 fetch_em_data 一致。"""
+    code = qt_code(symbol, exchange)
+    r = _get_with_retry(
+        _QT_URL.format(code=code),
+        headers={"Referer": "https://gu.qq.com/"},
+        timeout=15,
+        label=f"[{symbol}] qt",
+    )
+    r.encoding = "gbk"
+    txt = r.text.strip()
+    if "=" not in txt:
+        raise ValueError(f"qt malformed response for {symbol}: {txt[:60]}")
+    fields = txt.split("=", 1)[1].strip().strip('";').split("~")
+    if len(fields) < 46:
+        raise ValueError(f"qt too few fields for {symbol}: len={len(fields)}")
+
+    price_yuan = round(float(fields[3]), 2) if fields[3] else 0.0
+    market_cap_yi = float(fields[45]) if fields[45] else 0.0
+    if price_yuan <= 0 or market_cap_yi <= 0:
+        raise ValueError(
+            f"qt missing price or market_cap for {symbol}: price={fields[3]}, cap={fields[45]}"
+        )
+
+    change_pct = round(float(fields[32]), 2) if fields[32] else 0.0
+    raw_vol = float(fields[36]) if fields[36] else 0.0
+    # 科创板(688)成交量单位是股，其他板块是手
+    vol_shou = raw_vol / 100 if symbol.startswith("688") else raw_vol
+    return {
+        "price_yuan": price_yuan,
+        "market_cap_yuan": market_cap_yi * 1e8,
+        "change_pct": change_pct,
+        "vol_wan_shou": round(vol_shou / 10000, 1),
+    }
+
+
+# ── 实时行情统一入口：腾讯主 + push2 备 ──────────────────────────────────────────
+
+
+def fetch_quote_data(symbol: str, exchange: str) -> dict[str, float]:
+    """实时行情：腾讯 qt 主源，东方财富 push2 备用。
+
+    2026-06-02 起 push2 海外边缘节点对本 EC2 持续返回 502（国内访问正常），
+    故腾讯为主源；push2 保留为备用，若未来恢复海外访问可自动受益。
+    """
+    try:
+        return fetch_qt_data(symbol, exchange)
+    except Exception as e:  # noqa: BLE001 — 任何主源异常都应触发备源
+        print(
+            f"WARN: [{symbol}] 腾讯 qt 失败 ({type(e).__name__}: {e})，回退 push2...",
+            file=sys.stderr,
+            flush=True,
+        )
+        return fetch_em_data(symbol, exchange)
+
+
 # ── Tencent K-line ─────────────────────────────────────────────────────────────
 _TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
@@ -211,12 +282,12 @@ def build_snapshot(stock: dict) -> dict:
     exchange = stock["exchange"]
     consensus = stock["consensus"]
 
-    print(f"  [{symbol}] 拉取 push2 行情...", flush=True)
-    em = fetch_em_data(symbol, exchange)
-    price_yuan = em["price_yuan"]
-    market_cap_yuan = em["market_cap_yuan"]
-    change_pct = em["change_pct"]
-    vol_wan_shou = em["vol_wan_shou"]
+    print(f"  [{symbol}] 拉取实时行情 (腾讯 qt 主 / push2 备)...", flush=True)
+    quote = fetch_quote_data(symbol, exchange)
+    price_yuan = quote["price_yuan"]
+    market_cap_yuan = quote["market_cap_yuan"]
+    change_pct = quote["change_pct"]
+    vol_wan_shou = quote["vol_wan_shou"]
 
     print(f"  [{symbol}] 拉取腾讯 K 线...", flush=True)
     ohlcv = fetch_ohlcv_data(symbol, exchange)
