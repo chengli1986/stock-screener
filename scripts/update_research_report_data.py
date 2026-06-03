@@ -6,7 +6,7 @@ update_research_report_data.py — 从完整年度报告 PDF + API 提取财报�
 1. 通过 akshare stock_financial_benefit_ths 获取近 N 年研发费用
 2. 通过巨潮资讯 API 查询最新完整年度报告 PDF 链接（非摘要版）
 3. 用 pdfplumber 按数据类别抽取关键页面
-4. 用 Claude Haiku 提取：员工结构、地区收入分布、各代产品出货情况
+4. 用 Claude (Max Plan) 提取：员工结构、地区收入分布、各代产品出货情况
 5. 写出 docs-site/data/{key}-report-data.json 并部署
 
 触发时机：每年 5 月 5 日自动运行（沪深交易所 4 月 30 日年报截止后 5 天），或年报季后人工运行。
@@ -26,7 +26,6 @@ import warnings
 from datetime import datetime, timedelta, timezone
 
 import akshare as ak
-import anthropic
 import pdfplumber
 import requests
 
@@ -43,27 +42,10 @@ DEPLOY_DATA_DIR = pathlib.Path("/var/www/overview/data")
 BJT = timezone(timedelta(hours=8))
 MAX_RD_YEARS = 6
 
-# ── Anthropic client ───────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-if not ANTHROPIC_API_KEY:
-    # Fallback: read from openclaw env file (used when running via cron without ANTHROPIC_API_KEY set)
-    _oc_env = pathlib.Path.home() / ".openclaw" / ".env"
-    if _oc_env.exists():
-        for _line in _oc_env.read_text().splitlines():
-            if _line.startswith("ANTHROPIC_API_KEY="):
-                ANTHROPIC_API_KEY = _line.split("=", 1)[1].strip()
-                break
-
-_claude = None
-
-
-def _get_claude() -> anthropic.Anthropic:
-    global _claude
-    if _claude is None:
-        if not ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _claude
+# ── LLM via Claude Code Max Plan (no API billing) ────────────────────────────────
+# 研报模块 LLM 统一走 Max 订阅，不用 ANTHROPIC_API_KEY 按量计费（用户明确要求）。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _claude_max import call_claude_max  # noqa: E402
 
 
 # ── helper ─────────────────────────────────────────────────────────────────────
@@ -244,7 +226,7 @@ def _extract_relevant_pages(pdf_path: pathlib.Path) -> tuple[str, int]:
     return "\n\n".join(relevant_texts), total_pages
 
 
-# ── Claude Haiku extraction ────────────────────────────────────────────────────
+# ── Claude (Max Plan) extraction ────────────────────────────────────────────────────
 _EXTRACTION_PROMPT = (
     "以下是中际旭创 300308（高速光模块）"
     "年度报告部分文字内容。\n"
@@ -273,16 +255,9 @@ _EXTRACTION_PROMPT = (
 
 
 def _extract_with_llm(pdf_text: str) -> dict:
-    """Call Claude Haiku to extract structured data from PDF text."""
-    client = _get_claude()
+    """Extract structured data from PDF text via Claude Code Max Plan (no API billing)."""
     prompt = _EXTRACTION_PROMPT + pdf_text[:12000]
-
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
+    raw = call_claude_max(prompt, timeout=120)
 
     # Strip markdown code fence if present
     json_match = re.search(r"\{[\s\S]*\}", raw)
@@ -323,7 +298,7 @@ def build_report_data(stock: dict) -> dict:
     if not pdf_text.strip():
         raise ValueError(f"[{symbol}] PDF 无法提取到含关键词的文字")
 
-    print(f"  [{symbol}] 调用 Claude Haiku 提取结构化数据...", flush=True)
+    print(f"  [{symbol}] 调用 Claude (Max Plan) 提取结构化数据...", flush=True)
     extracted = _extract_with_llm(pdf_text)
     print(f"  [{symbol}]   提取完成", flush=True)
 

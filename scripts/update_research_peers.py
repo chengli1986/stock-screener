@@ -8,7 +8,7 @@ update_research_peers.py — 全球竞争格局同行数据更新
     * COHR Networking 分部值人工维护，每年从 10-K 更新
   - 多元化同行分部数据（华工科技/东山精密）：
     * 默认（月度 cron）：跳过 PDF 提取，只记录占位
-    * --with-pdf：从巨潮年报 PDF + Claude Haiku 提取光通信分部营收
+    * --with-pdf：从巨潮年报 PDF + Claude (Max Plan) 提取光通信分部营收
   - 旭创自身（300308）：读取已有 300308-financials.json
   - USD/CNY 汇率：yfinance USDCNY=X
 
@@ -46,27 +46,10 @@ DATA_DIR = DOCS_SITE_DIR / "data"
 DEPLOY_DATA_DIR = pathlib.Path("/var/www/overview/data")
 BJT = timezone(timedelta(hours=8))
 
-# ── Anthropic（仅 --with-pdf 时使用）────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-if not ANTHROPIC_API_KEY:
-    _oc_env = pathlib.Path.home() / ".openclaw" / ".env"
-    if _oc_env.exists():
-        for _line in _oc_env.read_text().splitlines():
-            if _line.startswith("ANTHROPIC_API_KEY="):
-                ANTHROPIC_API_KEY = _line.split("=", 1)[1].strip()
-                break
-
-_claude = None
-
-
-def _get_claude():
-    global _claude
-    if _claude is None:
-        import anthropic
-        if not ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _claude
+# ── LLM via Claude Code Max Plan (no API billing，仅 --with-pdf 时使用) ───────────
+# 分部营收提取统一走 Max 订阅，不用 ANTHROPIC_API_KEY 按量计费（用户明确要求）。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _claude_max import call_claude_max  # noqa: E402
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -377,8 +360,7 @@ def _extract_segment_pages(pdf_path: pathlib.Path, optical_keywords: list[str]) 
 
 
 def _extract_segment_with_llm(company_name: str, pdf_text: str) -> dict | None:
-    """调用 Claude Haiku 提取光模块/光通信分部营收。"""
-    client = _get_claude()
+    """调用 Claude (Max Plan) 提取光模块/光通信分部营收。"""
     prompt = (
         "以下是" + company_name + "年度报告部分文字内容。\n"
         "请从中提取光模块/光通信/光器件相关业务的分部营收数据。\n\n"
@@ -390,12 +372,7 @@ def _extract_segment_with_llm(company_name: str, pdf_text: str) -> dict | None:
         "年度报告文字内容：\n"
     ) + pdf_text[:12000]
 
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=512,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = msg.content[0].text.strip()
+    raw = call_claude_max(prompt, timeout=120)
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
         raise ValueError(f"LLM 返回无法解析的内容: {raw[:200]}")
@@ -455,7 +432,7 @@ def fetch_segment_peer(cfg: dict, usd_cny: float) -> dict:
         print(f"    [{symbol}] 共 {total_pages} 页，提取到 {len(seg_text)} 字符", flush=True)
 
         if seg_text.strip():
-            print(f"    [{symbol}] 调用 Claude Haiku 提取分部营收...", flush=True)
+            print(f"    [{symbol}] 调用 Claude (Max Plan) 提取分部营收...", flush=True)
             segment = _extract_segment_with_llm(company_name, seg_text)
             print(f"    [{symbol}] 分部提取结果: {segment}", flush=True)
 
@@ -512,7 +489,7 @@ def fetch_segment_peer(cfg: dict, usd_cny: float) -> dict:
             p["segment_label"] = segment.get("name") or cfg.get("segment_label", "光通信分部")
             p["segment_pct"] = _safe(segment.get("pct_of_total"))
             p["segment_note"] = segment.get("note", "")
-            p["segment_source"] = f"{fiscal_label} 年报 PDF + Claude Haiku 提取"
+            p["segment_source"] = f"{fiscal_label} 年报 PDF + Claude (Max Plan) 提取"
 
     return p
 
