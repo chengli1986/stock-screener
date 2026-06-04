@@ -87,9 +87,9 @@ def fetch_financials(symbol: str) -> dict:
 
         entry: dict = {
             "year": col[:4] + "A",
-            "revenue_yi": round(revenue / 1e8) if revenue else None,
+            "revenue_yi": round(revenue / 1e8, 2) if revenue else None,
             "revenue_yoy_pct": round(revenue_yoy, 1) if revenue_yoy is not None else None,
-            "profit_yi": round(profit / 1e8) if profit else None,
+            "profit_yi": round(profit / 1e8, 2) if profit else None,
             "profit_yoy_pct": round(profit_yoy, 1) if profit_yoy is not None else None,
             "gross_margin_pct": round(gross_margin, 1) if gross_margin is not None else None,
             "net_margin_pct": round(net_margin, 1) if net_margin is not None else None,
@@ -122,9 +122,9 @@ def fetch_financials(symbol: str) -> dict:
         latest_q = {
             "label": label,
             "end_date": f"{col[:4]}-{col[4:6]}-{col[6:8]}",
-            "revenue_yi": round(revenue / 1e8) if revenue else None,
+            "revenue_yi": round(revenue / 1e8, 2) if revenue else None,
             "revenue_yoy_pct": round(revenue_yoy, 1) if revenue_yoy is not None else None,
-            "profit_yi": round(profit / 1e8) if profit else None,
+            "profit_yi": round(profit / 1e8, 2) if profit else None,
             "profit_yoy_pct": round(profit_yoy, 1) if profit_yoy is not None else None,
             "gross_margin_pct": round(gross_margin, 1) if gross_margin is not None else None,
             "net_margin_pct": round(net_margin, 1) if net_margin is not None else None,
