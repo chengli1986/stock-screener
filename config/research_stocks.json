@@ -120,5 +120,18 @@
         "cooldown_days": 3
       }
     ]
+  },
+  {
+    "symbol": "000636",
+    "exchange": "SZ",
+    "name": "风华高科",
+    "snapshot_key": "000636",
+    "page": "/fenghua-000636.html",
+    "valuation_mode": "both",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 6850000000, "profit_yuan": 612000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 7300000000, "profit_yuan": 753000000 }
+    },
+    "price_alerts": []
   }
 ]
