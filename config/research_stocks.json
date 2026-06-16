@@ -133,5 +133,18 @@
       "2027E": { "label": "2027E", "revenue_yuan": 7300000000, "profit_yuan": 753000000 }
     },
     "price_alerts": []
+  },
+  {
+    "symbol": "300408",
+    "exchange": "SZ",
+    "name": "三环集团",
+    "snapshot_key": "300408",
+    "page": "/sanhuan-300408.html",
+    "valuation_mode": "both",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 11200000000, "profit_yuan": 3270000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 13600000000, "profit_yuan": 4000000000 }
+    },
+    "price_alerts": []
   }
 ]
