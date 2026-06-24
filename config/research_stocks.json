@@ -146,5 +146,30 @@
       "2027E": { "label": "2027E", "revenue_yuan": 13600000000, "profit_yuan": 4000000000 }
     },
     "price_alerts": []
+  },
+  {
+    "symbol": "300750",
+    "exchange": "SZ",
+    "name": "宁德时代",
+    "snapshot_key": "300750",
+    "page": "/catl-300750.html",
+    "consensus": {
+      "2026E": { "label": "2026E", "profit_yuan": 92000000000 },
+      "2027E": { "label": "2027E", "profit_yuan": 113000000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "次优买点（~16x 2026E）",
+        "threshold": 330,
+        "pe_band": "16x 2026E",
+        "cooldown_days": 3
+      },
+      {
+        "label": "最佳买点（~14x 2026E）",
+        "threshold": 285,
+        "pe_band": "14x 2026E",
+        "cooldown_days": 3
+      }
+    ]
   }
 ]
