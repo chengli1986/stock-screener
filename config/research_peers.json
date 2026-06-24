@@ -18,5 +18,15 @@
       {"name": "欣旺达", "code": "300207", "tencent": "sz300207", "market": "创业板", "currency": "CNY"},
       {"name": "中创新航", "code": "03931", "tencent": "hk03931", "market": "港股主板", "currency": "HKD"}
     ]
+  },
+  "02513": {
+    "table_label": "港股 AI / 大模型同业市值（自动刷新）",
+    "peers": [
+      {"name": "MiniMax", "code": "00100", "tencent": "hk00100", "market": "港股主板", "currency": "HKD"},
+      {"name": "商汤-W", "code": "00020", "tencent": "hk00020", "market": "港股主板", "currency": "HKD"},
+      {"name": "美图公司", "code": "01357", "tencent": "hk01357", "market": "港股主板", "currency": "HKD"},
+      {"name": "第四范式", "code": "06682", "tencent": "hk06682", "market": "港股主板", "currency": "HKD"},
+      {"name": "出门问问", "code": "02438", "tencent": "hk02438", "market": "港股主板", "currency": "HKD"}
+    ]
   }
 }

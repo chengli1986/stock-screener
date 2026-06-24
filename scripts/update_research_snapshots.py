@@ -98,6 +98,8 @@ def em_secid(symbol: str, exchange: str) -> str:
         return f"1.{symbol}"
     if exchange == "SZ":
         return f"0.{symbol}"
+    if exchange == "HK":
+        return f"116.{symbol}"
     raise ValueError(f"Unknown exchange: {exchange}")
 
 
@@ -146,6 +148,8 @@ def qt_code(symbol: str, exchange: str) -> str:
         return f"sh{symbol}"
     if exchange == "SZ":
         return f"sz{symbol}"
+    if exchange == "HK":
+        return f"hk{symbol}"
     raise ValueError(f"Unknown exchange: {exchange}")
 
 
@@ -215,7 +219,7 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
     """
     import math
 
-    mkt = "sh" if exchange == "SH" else "sz"
+    mkt = {"SH": "sh", "SZ": "sz", "HK": "hk"}.get(exchange, "sz")
     code = f"{mkt}{symbol}"
     end_dt = datetime.now(BJT)
     start_dt = end_dt - timedelta(days=366)

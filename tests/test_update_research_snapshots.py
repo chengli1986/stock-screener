@@ -65,9 +65,27 @@ class TestQtCode:
     def test_sz_prefix(self):
         assert urs.qt_code("300308", "SZ") == "sz300308"
 
+    def test_hk_prefix(self):
+        assert urs.qt_code("02513", "HK") == "hk02513"
+
     def test_unknown_exchange_raises(self):
         with pytest.raises(ValueError):
             urs.qt_code("300308", "BJ")
+
+
+class TestEmSecid:
+    def test_sh_secid(self):
+        assert urs.em_secid("688256", "SH") == "1.688256"
+
+    def test_sz_secid(self):
+        assert urs.em_secid("300308", "SZ") == "0.300308"
+
+    def test_hk_secid(self):
+        assert urs.em_secid("02513", "HK") == "116.02513"
+
+    def test_unknown_exchange_raises(self):
+        with pytest.raises(ValueError):
+            urs.em_secid("300308", "BJ")
 
 
 # ── fetch_qt_data:腾讯 qt 行情解析 ────────────────────────────────────────────

@@ -171,5 +171,18 @@
         "cooldown_days": 3
       }
     ]
+  },
+  {
+    "symbol": "02513",
+    "exchange": "HK",
+    "name": "智谱",
+    "snapshot_key": "02513",
+    "page": "/zhipu-02513.html",
+    "valuation_mode": "ps",
+    "consensus": {
+      "2025E": { "label": "2025E", "revenue_yuan": 500000000 },
+      "2026E": { "label": "2026E", "revenue_yuan": 1000000000 }
+    },
+    "price_alerts": []
   }
 ]
