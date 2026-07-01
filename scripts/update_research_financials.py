@@ -11,6 +11,7 @@ update_research_financials.py — 季度财务快照更新脚本
 
 建议：每季报披露后手动运行一次，或每月 1 日定时运行。
 脚本任意股票失败都 exit(1)，由 cron-wrapper 触发告警邮件。
+港股（exchange=HK）财务不走 akshare（该接口只支持 A 股），跳过，招股书人工半年更新一次。
 """
 
 import json
@@ -264,6 +265,9 @@ def main() -> int:
 
     for stock in stocks:
         symbol = stock["symbol"]
+        if stock["exchange"] == "HK":
+            print(f"  [{symbol}] 港股财务不走 akshare，人工维护，跳过")
+            continue
         try:
             data = build_financials(stock)
             write_and_deploy(stock["snapshot_key"], data)
