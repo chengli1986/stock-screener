@@ -265,7 +265,7 @@ def main() -> int:
 
     for stock in stocks:
         symbol = stock["symbol"]
-        if stock["exchange"] == "HK":
+        if stock.get("exchange") == "HK":
             print(f"  [{symbol}] 港股财务不走 akshare，人工维护，跳过")
             continue
         try:
