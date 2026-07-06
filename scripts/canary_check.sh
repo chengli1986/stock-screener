@@ -36,8 +36,10 @@ if [[ ! -f "$REPORT" ]]; then
     exit 1
 fi
 
+# if ! …: heredoc 退出码必须显式检查 — 928026c 在本段后追加探针后，
+# 隐式"最后一条命令=脚本退出码"失效，阈值 FAIL 曾静默通过（2026-07-05 13/15 exit 0）
 export REPORT
-python3 << 'PYEOF'
+if ! python3 << 'PYEOF'
 import json, os, sys
 
 report = json.load(open(os.environ["REPORT"], encoding="utf-8"))
@@ -59,6 +61,10 @@ if issues:
 
 print(f"[canary] OK: universe={u_total} ohlcv={ok_ohlcv}/15 fundamentals={ok_fund}/15")
 PYEOF
+then
+    echo "[canary] threshold check failed" >&2
+    exit 1
+fi
 
 # ── 新 API 探针：腾讯财经 K 线 + THS 质量指标 ─────────────────────────────────
 # 固定 3 只 fixture stocks（主板 + 科创板 + A 股代表），验证两条新数据链。
