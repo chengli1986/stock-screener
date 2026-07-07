@@ -173,6 +173,32 @@
     ]
   },
   {
+    "symbol": "600519",
+    "exchange": "SH",
+    "name": "贵州茅台",
+    "snapshot_key": "600519",
+    "page": "/moutai-600519.html",
+    "valuation_mode": "pe",
+    "consensus": {
+      "2026E": { "label": "2026E", "profit_yuan": 85270000000 },
+      "2027E": { "label": "2027E", "profit_yuan": 89490000000 }
+    },
+    "price_alerts": [
+      {
+        "label": "保守买点（15x 2025A EPS）",
+        "threshold": 985,
+        "pe_band": "15x 2025A EPS",
+        "cooldown_days": 3
+      },
+      {
+        "label": "深度价值买点（12x 2025A EPS）",
+        "threshold": 788,
+        "pe_band": "12x 2025A EPS",
+        "cooldown_days": 3
+      }
+    ]
+  },
+  {
     "symbol": "02513",
     "exchange": "HK",
     "name": "智谱",
