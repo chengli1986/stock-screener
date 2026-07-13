@@ -33,6 +33,8 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 
+import requests
+
 # ── paths ─────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +86,11 @@ BJT = timezone(timedelta(hours=8))
 # A-share secid prefix: 1 = SSE, 0 = SZSE
 # HK secid prefix: 116
 EM_FIELDS = "f116,f162,f163,f167,f173,f183,f184,f185,f186,f187"
+
+# push2delay 单次请求偶发 15s 超时（2026-07-05/07-08/07-13 canary 三次复现，
+# 事后手动重放均 <2s 恢复 → 上游瞬时挂起非代码 bug）。2 次重试 + 2s/5s 退避，
+# 只覆盖网络层瞬时错误（超时/连接失败），HTTP 4xx 等逻辑错误不重试。
+FUND_RETRY_BACKOFFS = [2, 5]
 EM_FIELD_MAP = {
     "f116": "market_cap",       # 总市值 (元)
     "f162": "_pe_static_raw",   # PE静态 ÷100
@@ -447,8 +454,6 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
     splitting these (e.g. fetch_error_null vs fetch_error_api) should find this
     comment and treat it as the branching point.
     """
-    import requests
-
     t0 = time.monotonic()
     secid = em_secid(symbol_norm)
     url = "https://push2delay.eastmoney.com/api/qt/stock/get"
@@ -468,8 +473,16 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
     }
 
     try:
-        r = requests.get(url, params=params, timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
+        for attempt in range(len(FUND_RETRY_BACKOFFS) + 1):
+            try:
+                r = requests.get(url, params=params, timeout=15,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                break
+            except (requests.Timeout, requests.exceptions.ConnectionError):
+                if attempt < len(FUND_RETRY_BACKOFFS):
+                    time.sleep(FUND_RETRY_BACKOFFS[attempt])
+                    continue
+                raise
         elapsed = round(time.monotonic() - t0, 2)
         base["time_s"] = elapsed
 
