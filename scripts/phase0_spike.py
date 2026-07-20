@@ -248,11 +248,17 @@ def _load_done_symbols(path: str, key: str = "symbol_norm") -> set[str]:
 
 # ── step 1: universe generation ───────────────────────────────────────────────
 
+# before attempts 2/3 — 跨过 csindex.com.cn 瞬时挂起（2026-07-20 10:00 BJT canary
+# 撞上 >30s 挂起，事后手动实测 csindex.com.cn 1.5s 恢复，确认非代码 bug；与
+# fetch_fundamentals_one 的 push2delay 瞬时超时同一类，见 FUND_RETRY_BACKOFFS）。
+CSI_RETRY_BACKOFFS = [5, 15]
+
+
 # akshare 不暴露 timeout 参数；中证指数官网 API 偶发挂起（2026-05-18 02:00 UTC 复现
 # 一次：5 min 后被 cron-wrapper SIGKILL，artifacts 零产出）。用 daemon 线程 + join
-# 超时让 CSI universe 拉取 fail-fast，下游 cron-wrapper 在 ~30s 收到 exit=1，而
-# 不是 300s 超时告警。
-def _fetch_csi_universe(timeout_s: int = 30):
+# 超时让单次 CSI universe 拉取 fail-fast，下游 cron-wrapper 在 ~30s 收到超时信号，
+# 而不是 300s 超时告警。挂起的 daemon 线程随进程退出被回收，重试时另起新线程。
+def _fetch_csi_once(timeout_s: int = 30):
     import threading
     import akshare as ak
 
@@ -276,6 +282,28 @@ def _fetch_csi_universe(timeout_s: int = 30):
     if "e" in error:
         raise error["e"]
     return result["df300"], result["df500"]
+
+
+# 单次 fail-fast + 重试退避：瞬时挂起/网络抖动重试，逻辑错误也重试（akshare 内部
+# 异常大多也是瞬时上游问题，代价可控）。三次全失败才向上抛，触发 cron 告警。
+def _fetch_csi_universe(timeout_s: int = 30):
+    last_err: Exception | None = None
+    for attempt in range(len(CSI_RETRY_BACKOFFS) + 1):
+        try:
+            return _fetch_csi_once(timeout_s)
+        except Exception as e:
+            last_err = e
+            if attempt < len(CSI_RETRY_BACKOFFS):
+                wait = CSI_RETRY_BACKOFFS[attempt]
+                print(
+                    f"[universe] CSI fetch attempt {attempt + 1} failed ({e}); "
+                    f"retry in {wait}s",
+                    flush=True,
+                )
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err  # unreachable: loop 要么 return 要么 raise
 
 
 def build_universe(market_filter: str | None, limit: int | None,
