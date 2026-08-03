@@ -138,6 +138,35 @@ def fetch_financials(symbol: str) -> dict:
 _EM_HOLDERNUM_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
+_TOP10_COLS = ("截止日期", "编号", "股东名称", "占流通股比例", "持股数量", "股本性质")
+
+
+def parse_top10(df) -> list[dict]:
+    """akshare 十大流通股东表 → 最新一期的前十大。
+
+    次新股（如长鑫科技 688825，2026-07-27 上市）首份定期报告尚未发布，akshare 返回
+    空表且列名不符，原实现直接取 ``df["截止日期"].max()`` 会抛 KeyError 并让整只股票
+    失败。**「还没到披露时点」是正常状态，不是错误** —— 一律返回空列表。
+    """
+    if df is None or getattr(df, "empty", True):
+        return []
+    if any(col not in df.columns for col in _TOP10_COLS):
+        return []
+
+    latest_period = df["截止日期"].max()
+    rows = df[df["截止日期"] == latest_period].head(10)
+    return [
+        {
+            "rank": int(row["编号"]),
+            "name": row["股东名称"],
+            "pct": float(row["占流通股比例"]),
+            "shares": int(row["持股数量"]),
+            "type": row["股本性质"],
+        }
+        for _, row in rows.iterrows()
+    ]
+
+
 def fetch_shareholders(symbol: str, exchange: str) -> dict:
     """拉取股东人数历史（近12期）+ 前十大流通股东。"""
     # 股东人数（东方财富），取近12期季度数据
@@ -185,21 +214,16 @@ def fetch_shareholders(symbol: str, exchange: str) -> dict:
             entry["change_pct"] = round(chg, 1)
         holder_history.append(entry)
 
-    # 前十大流通股东（akshare）
-    df_sh = ak.stock_circulate_stock_holder(symbol=symbol)
-    latest_period = df_sh["截止日期"].max()
-    top10_df = df_sh[df_sh["截止日期"] == latest_period].head(10)
-
-    top10 = [
-        {
-            "rank": int(row["编号"]),
-            "name": row["股东名称"],
-            "pct": float(row["占流通股比例"]),
-            "shares": int(row["持股数量"]),
-            "type": row["股本性质"],
-        }
-        for _, row in top10_df.iterrows()
-    ]
+    # 前十大流通股东（akshare）——次新股尚未披露时降级为空，不影响股东户数
+    try:
+        top10 = parse_top10(ak.stock_circulate_stock_holder(symbol=symbol))
+    except Exception as e:
+        print(
+            f"WARN: [{symbol}] 十大流通股东获取失败（{type(e).__name__}），"
+            f"按未披露处理，股东户数不受影响",
+            file=sys.stderr,
+        )
+        top10 = []
 
     return {
         "report_date": report_date,
