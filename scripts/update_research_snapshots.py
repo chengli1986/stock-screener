@@ -233,29 +233,76 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
     d = r.json()
     stock_data = d.get("data", {}).get(code, {})
     rows = stock_data.get("qfqday") or stock_data.get("day", [])
-    if len(rows) < 60:
-        raise ValueError(f"Too few K-line rows for {symbol}: {len(rows)}")
+    return compute_technicals(rows, symbol=symbol)
+
+
+_TRADING_DAYS_PER_YEAR = 252
+# 「满一年」按日历跨度判定,不按 K 线根数。生产端只取近 366 天,A 股一年实测约 241 根
+# (中际旭创 2026-08-03 实测 241),用 252 根做门槛会把所有存量股票误判成历史不足。
+# 留 15 天余量吸收长假与停牌。
+_FULL_YEAR_SPAN_DAYS = 350
+
+
+def _spans_full_year(rows: list) -> bool:
+    """K 线首末日期跨度是否够一年。日期解析不了时保守返回 False(宁可标不足)。"""
+    if len(rows) < 2:
+        return False
+    try:
+        first = datetime.strptime(str(rows[0][0])[:10], "%Y-%m-%d").date()
+        last = datetime.strptime(str(rows[-1][0])[:10], "%Y-%m-%d").date()
+    except (ValueError, IndexError, TypeError):
+        return False
+    return (last - first).days >= _FULL_YEAR_SPAN_DAYS
+
+
+def compute_technicals(rows: list, symbol: str = "") -> dict:
+    """腾讯 K 线行 → 技术指标。行格式 [date, open, close, high, low, volume, amount, ...]。
+
+    **历史长度守卫**:每个指标只在数据真的够的时候才给值，不够就是 None。
+    次新股(长鑫科技 688825 上市 6 个交易日、智谱 02513 上市 138 个交易日)是这里的
+    主要约束——旧实现在不足 252 根时会静默把短窗口涨幅写进 `year_return_pct`，
+    让页面把 138 日的 +629.7% 标成「1 年涨幅」。数据不够就说不够，不拿短窗口冒充。
+
+    `history_days` / `period_return_pct` / `week52_is_full` 是为此新增的字段，
+    下游可据此显示「上市以来 +X%（N 个交易日）」而不是假的年度指标。
+    """
+    import math
+
+    if not rows:
+        raise ValueError(f"No K-line rows for {symbol or 'stock'}")
 
     closes  = [float(row[2]) for row in rows if len(row) >= 3]
     highs   = [float(row[3]) for row in rows if len(row) >= 5]
     lows    = [float(row[4]) for row in rows if len(row) >= 5]
     volumes = [float(row[5]) for row in rows if len(row) >= 6]
 
-    # 1 年涨幅
-    window = closes[-252:] if len(closes) >= 252 else closes
-    year_return_pct = round((window[-1] / window[0] - 1) * 100, 1)
+    if not closes:
+        raise ValueError(f"No usable close prices for {symbol or 'stock'}")
 
-    # MA20（当日 + 5 日前，判断斜率）
-    ma20 = round(sum(closes[-20:]) / 20, 2) if len(closes) >= 20 else None
-    ma20_5d = round(sum(closes[-25:-5]) / 20, 2) if len(closes) >= 25 else None
-    ma20_slope = "up" if (ma20 and ma20_5d and ma20 > ma20_5d) else "down"
+    history_days = len(closes)
+    has_full_year = _spans_full_year(rows)
+
+    # 1 年涨幅：抓取窗口本身就是近 366 天，满一年时整段即为年涨幅
+    year_return_pct: float | None = None
+    if has_full_year and closes[0]:
+        year_return_pct = round((closes[-1] / closes[0] - 1) * 100, 1)
+
+    # 全窗口涨幅：次新股用它代替年涨幅（配合 history_days 才有意义）
+    period_return_pct = round((closes[-1] / closes[0] - 1) * 100, 1) if closes[0] else None
+
+    # MA20（当日 + 5 日前，判断斜率）；斜率算不出时为 None，不默认 "down"
+    ma20 = round(sum(closes[-20:]) / 20, 2) if history_days >= 20 else None
+    ma20_5d = round(sum(closes[-25:-5]) / 20, 2) if history_days >= 25 else None
+    ma20_slope = None
+    if ma20 is not None and ma20_5d is not None:
+        ma20_slope = "up" if ma20 > ma20_5d else "down"
 
     # 60 日年化波动率（对数收益率标准差 × √252）
     vol_60d_ann_pct: float | None = None
-    if len(closes) >= 61:
+    if history_days >= 61:
         lr = [math.log(closes[-60 + i + 1] / closes[-60 + i]) for i in range(59)]
         daily_std = math.sqrt(sum(x * x for x in lr) / len(lr))
-        vol_60d_ann_pct = round(daily_std * math.sqrt(252) * 100, 1)
+        vol_60d_ann_pct = round(daily_std * math.sqrt(_TRADING_DAYS_PER_YEAR) * 100, 1)
 
     # 5 日 / 60 日量比
     vol_ratio_5_60: float | None = None
@@ -264,21 +311,38 @@ def fetch_ohlcv_data(symbol: str, exchange: str) -> dict:
         avg60 = sum(volumes[-60:]) / 60
         vol_ratio_5_60 = round(avg5 / avg60, 2) if avg60 > 0 else None
 
-    # 52 周（最近252交易日）高低
-    win_h = highs[-252:] if len(highs) >= 252 else highs
-    win_l = lows[-252:]  if len(lows)  >= 252 else lows
-    week52_high = round(max(win_h), 2) if win_h else None
-    week52_low  = round(min(win_l), 2) if win_l else None
+    # 52 周高低：抓取窗口即近一年；不满一年时这是「上市以来」极值，用 week52_is_full 标出
+    week52_is_full = has_full_year
+    week52_high = round(max(highs), 2) if highs else None
+    week52_low  = round(min(lows), 2) if lows else None
 
     return {
         "year_return_pct": year_return_pct,
+        "period_return_pct": period_return_pct,
+        "history_days": history_days,
         "ma20": ma20,
         "ma20_slope": ma20_slope,
         "vol_60d_ann_pct": vol_60d_ann_pct,
         "vol_ratio_5_60": vol_ratio_5_60,
         "week52_high": week52_high,
         "week52_low": week52_low,
+        "week52_is_full": week52_is_full,
     }
+
+
+def format_return_summary(snapshot: dict) -> str:
+    """控制台摘要里的涨幅串。
+
+    次新股没有 1 年涨幅,退回「上市以来 +X% (N日)」——既不崩,也不冒充年度指标。
+    """
+    year = snapshot.get("year_return_pct")
+    if year is not None:
+        return f"1年{year:+.1f}%"
+    period = snapshot.get("period_return_pct")
+    days = snapshot.get("history_days")
+    if period is not None and days is not None:
+        return f"上市以来{period:+.1f}% ({days}日)"
+    return "涨幅—"
 
 
 # ── snapshot writer ─────────────────────────────────────────────────────────────
@@ -318,7 +382,10 @@ def build_snapshot(stock: dict) -> dict:
         "change_pct": change_pct,
         "vol_wan_shou": vol_wan_shou,
         "market_cap_yi": market_cap_yi,
+        # 次新股 year_return_pct 为 None,改看 period_return_pct + history_days
         "year_return_pct": ohlcv["year_return_pct"],
+        "period_return_pct": ohlcv.get("period_return_pct"),
+        "history_days": ohlcv.get("history_days"),
         "pe_estimates": pe_estimates,
         "ps_estimates": ps_estimates,
         "technical": {
@@ -328,6 +395,7 @@ def build_snapshot(stock: dict) -> dict:
             "vol_ratio_5_60": ohlcv["vol_ratio_5_60"],
             "week52_high": ohlcv["week52_high"],
             "week52_low": ohlcv["week52_low"],
+            "week52_is_full": ohlcv.get("week52_is_full"),
         },
         "updated_at": datetime.now(BJT).isoformat(),
     }
@@ -370,12 +438,12 @@ def main() -> int:
             write_and_deploy(stock["snapshot_key"], snapshot)
             market_cap_yi = snapshot["market_cap_yi"]
             price = snapshot["price_yuan"]
-            yr = snapshot["year_return_pct"]
+            ret_str = format_return_summary(snapshot)
             if snapshot["ps_estimates"]:
                 val_str = "  ".join(f"{k}={v}x PS" for k, v in snapshot["ps_estimates"].items())
             else:
                 val_str = "  ".join(f"{k}={v}x" for k, v in snapshot["pe_estimates"].items())
-            print(f"  [{symbol}] ✓  ¥{price}  市值{market_cap_yi}亿  1年{yr:+.1f}%  {val_str}")
+            print(f"  [{symbol}] ✓  ¥{price}  市值{market_cap_yi}亿  {ret_str}  {val_str}")
         except Exception as e:
             msg = f"[{symbol}] FAILED: {e}"
             print(f"ERROR: {msg}", file=sys.stderr)

@@ -210,5 +210,19 @@
       "2026E": { "label": "2026E", "revenue_yuan": 1000000000 }
     },
     "price_alerts": []
+  },
+  {
+    "symbol": "688825",
+    "exchange": "SH",
+    "name": "长鑫科技",
+    "snapshot_key": "688825",
+    "page": "/changxin-688825.html",
+    "valuation_mode": "both",
+    "consensus_note": "2026-08-03 取自同花顺一致预期，仅 3 家机构覆盖（上市 6 个交易日），离散度见 688825-consensus.json；研报页尚未撰写，暂未接入 narrative-config.json",
+    "consensus": {
+      "2026E": { "label": "2026E", "revenue_yuan": 281334000000, "profit_yuan": 140256000000 },
+      "2027E": { "label": "2027E", "revenue_yuan": 433530000000, "profit_yuan": 239811000000 }
+    },
+    "price_alerts": []
   }
 ]
