@@ -150,7 +150,7 @@ def compare_with_registry(stock: dict, parsed: dict[str, dict[str, float]]) -> l
             if frozen is None:
                 continue
             latest = parsed.get(year, {}).get(parsed_field)
-            delta_pct = (latest / frozen - 1) * 100 if (latest is not None and frozen) else None
+            delta_pct = round((latest / frozen - 1) * 100, 2) if (latest is not None and frozen) else None
             deltas.append(
                 {
                     "year": year,
@@ -171,6 +171,11 @@ def significant_changes(deltas: list[dict], threshold_pct: float = DEFAULT_THRES
     ]
 
 
+def _round_yuan(value: float | None) -> int | None:
+    """`亿 → 元` 的 ×1e8 会留浮点尾巴(233407000000.00003),金额一律取整到元。"""
+    return round(value) if value is not None else None
+
+
 def build_record(
     stock: dict,
     parsed: dict[str, dict[str, float]],
@@ -187,15 +192,15 @@ def build_record(
     for year, fields in sorted(parsed.items()):
         rec: dict = {}
         if "revenue" in fields:
-            rec["revenue_yuan"] = fields["revenue"]
+            rec["revenue_yuan"] = _round_yuan(fields["revenue"])
         if "profit" in fields:
-            rec["profit_yuan"] = fields["profit"]
+            rec["profit_yuan"] = _round_yuan(fields["profit"])
         disp = dispersion.get(year[:4]) if year.endswith("E") else None
         if disp:
             rec["orgs"] = disp["orgs"]
-            rec["profit_min_yuan"] = disp["min"]
-            rec["profit_max_yuan"] = disp["max"]
-            rec["spread_ratio"] = disp["spread_ratio"]
+            rec["profit_min_yuan"] = _round_yuan(disp["min"])
+            rec["profit_max_yuan"] = _round_yuan(disp["max"])
+            rec["spread_ratio"] = round(disp["spread_ratio"], 2) if disp["spread_ratio"] else None
         estimates[year] = rec
 
     return {

@@ -208,3 +208,22 @@ def test_build_record_carries_provenance_and_dispersion():
     assert rec["estimates"]["2026E"]["orgs"] == 31
     assert rec["estimates"]["2026E"]["spread_ratio"] == pytest.approx(1.74)
     assert rec["deltas_vs_registry"][0]["delta_pct"] == pytest.approx(6.6, abs=0.1)
+
+
+def test_build_record_rounds_away_float_noise():
+    """`亿 → 元` 的 ×1e8 会留下浮点尾巴(233407000000.00003 / 33989999999.999996),
+    落进 JSON 后既难读又显得像坏数据。金额取整到元,比值/百分比保留 2 位。"""
+    stock = {"symbol": "300308", "name": "中际旭创", "snapshot_key": "300308",
+             "consensus": {"2027E": {"profit_yuan": 48_000_000_000}}}
+    parsed = {"2028E": {"revenue": 233_407_000_000.00003},
+              "2027E": {"profit": 53_534_000_000.0}}
+    disp = {"2027": {"orgs": 31, "min": 33_989_999_999.999996,
+                     "max": 79_982_000_000.0, "mean": 53_534_000_000.0,
+                     "spread_ratio": 2.353103854074728}}
+
+    rec = urc.build_record(stock, parsed, disp, fetched_at="2026-08-03T15:00:00+08:00")
+
+    assert rec["estimates"]["2028E"]["revenue_yuan"] == 233_407_000_000
+    assert rec["estimates"]["2027E"]["profit_min_yuan"] == 33_990_000_000
+    assert rec["estimates"]["2027E"]["spread_ratio"] == 2.35
+    assert rec["deltas_vs_registry"][0]["delta_pct"] == 11.53
