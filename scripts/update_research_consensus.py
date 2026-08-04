@@ -467,6 +467,14 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
         mid = n // 2
         median = (svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2) if enough else None
 
+        # 薄覆盖时显式回退到简单算术平均：2-3 家覆盖下中位数/加权/离群检测全无意义，
+        # 与其让下游猜该用哪个统计量，不如直接把结论和理由一起落盘。
+        simple_mean = sum(values) / n
+        if enough:
+            preferred_stat, preferred_value, preferred_reason = "median", median, "robust"
+        else:
+            preferred_stat, preferred_value, preferred_reason = "mean", simple_mean, "thin_coverage"
+
         flags = flag_outliers(values, k)
         mad = median_abs_deviation(values) if n >= 3 else 0.0
         med_for_dev = svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2
@@ -483,8 +491,11 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
         known_ages = [a for a in ages if a is not None]
 
         out[year] = {
+            "preferred_stat": preferred_stat,
+            "preferred_value": _round_yuan(preferred_value),
+            "preferred_reason": preferred_reason,
             "median": _round_yuan(median),
-            "mean": _round_yuan(sum(values) / n),
+            "mean": _round_yuan(simple_mean),
             "weighted_mean": _round_yuan(
                 sum(v * w for v, w in zip(values, weights)) / wsum) if wsum > 0 else None,
             "min": _round_yuan(svals[0]),

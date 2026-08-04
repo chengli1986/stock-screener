@@ -192,3 +192,60 @@ def test_robust_stats_records_deviation_pct_for_review():
 
     assert len(out["outliers"]) == 1
     assert out["outliers"][0]["deviation_pct"] == pytest.approx(44.5, abs=1.0)
+
+
+# ── 薄覆盖标的：显式回退到简单算术平均 ────────────────────────────────────────
+#
+# 用户（前卖方分析师）指示：长光华芯(3家)/风华高科(2家)/长鑫科技(2家) 这类覆盖，
+# 加权、中位数、离群检测在该样本量上全都无意义，**简单算术平均更可行**。
+# 故不再让下游自己去猜该用哪个统计量——直接落盘 `preferred_stat` / `preferred_value`。
+
+
+def test_preferred_stat_is_median_when_coverage_is_thick():
+    recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
+            for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_stat"] == "median"
+    assert out["preferred_value"] == out["median"]
+
+
+def test_preferred_stat_falls_back_to_simple_mean_when_thin():
+    """2-3 家覆盖：中位数/加权/离群都无意义，用简单算术平均。"""
+    recs = [{"org": "券商A", "published": "2026-07-01", "value": 100.0},
+            {"org": "券商B", "published": "2026-01-01", "value": 200.0}]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_stat"] == "mean"
+    assert out["preferred_value"] == 150.0, "薄覆盖时应为简单算术平均，不是加权均值"
+
+
+def test_preferred_value_ignores_recency_weighting_when_thin():
+    """薄覆盖时刻意不用 weighted_mean —— 2 个样本做时间加权是过度处理。"""
+    recs = [{"org": "券商A", "published": "2026-08-01", "value": 100.0},
+            {"org": "券商B", "published": "2025-01-01", "value": 200.0}]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_value"] == 150.0
+    assert out["weighted_mean"] != out["preferred_value"]
+
+
+def test_thin_coverage_carries_explicit_reason():
+    """下游要能显示『为什么用的是简单均值』，不能只给个数。"""
+    recs = [{"org": "券商A", "published": "2026-07-01", "value": 100.0}]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_reason"] == "thin_coverage"
+
+
+def test_thick_coverage_reason_is_robust():
+    recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": 100.0 + i}
+            for i in range(6)]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_reason"] == "robust"
