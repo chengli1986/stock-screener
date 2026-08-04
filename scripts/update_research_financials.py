@@ -234,6 +234,127 @@ def fetch_shareholders(symbol: str, exchange: str) -> dict:
     }
 
 
+# ── 港股财务（yfinance）────────────────────────────────────────────────────────
+#
+# akshare `stock_financial_abstract` 只支持 A 股，港股原本跳过 → 智谱的 financials.json
+# 自 2026-06-24 冻结，2026-08-04 触发 research-data-health 告警。
+# 真问题比告警更严重：latest_annual 停在 2024A，而 2025 年报早已发布。
+# yfinance 实测可给 2022–2025 四年、七个字段全覆盖。
+
+_HK_TIMEOUT_S = 60
+
+
+def _pick(table: dict, *keys):
+    """按候选键名取一行（yfinance 行名在不同标的间会变体）。"""
+    lowered = {str(k).lower(): k for k in (table or {})}
+    for k in keys:
+        hit = lowered.get(k.lower())
+        if hit is not None:
+            return table[hit]
+    return {}
+
+
+def _yi(v):
+    return round(v / 1e8, 2) if v is not None else None
+
+
+def _pct(num, den):
+    """比率转百分比。分母为 0/None 时返回 None——不返回 0。"""
+    if num is None or not den:
+        return None
+    return round(num / den * 100, 2)
+
+
+def build_hk_annual(income: dict, balance: dict, cashflow: dict, years: list[str]) -> list[dict]:
+    """yfinance 三张表 → 与 A 股同构的 annual 列表（旧→新）。
+
+    ★**负权益时 ROE 必须留空**：智谱 2025 年 Stockholders Equity = -80.93 亿
+    （优先股/可转换工具上市前计入负债，港股新经济公司常见）。
+    ROE = -47.18 / -80.93 = **+58.3%**，负负得正后看起来像高盈利——是假象。
+    另置 `equity_negative` 让页面能说明「为什么没有 ROE」。
+    """
+    rev = _pick(income, "Total Revenue")
+    gp = _pick(income, "Gross Profit")
+    ni = _pick(income, "Net Income Common Stockholders", "Net Income")
+    eq = _pick(balance, "Stockholders Equity", "Common Stock Equity")
+    ta = _pick(balance, "Total Assets")
+    tl = _pick(balance, "Total Liabilities Net Minority Interest", "Total Liabilities")
+    cfo = _pick(cashflow, "Operating Cash Flow")
+
+    out: list[dict] = []
+    for i, y in enumerate(years):
+        r, p = rev.get(y), ni.get(y)
+        prev_r = rev.get(years[i - 1]) if i > 0 else None
+        prev_p = ni.get(years[i - 1]) if i > 0 else None
+        equity = eq.get(y)
+        row = {
+            "year": f"{y}A",
+            "revenue_yi": _yi(r),
+            "revenue_yoy_pct": _pct(r - prev_r, prev_r) if (r is not None and prev_r) else None,
+            "profit_yi": _yi(p),
+            "profit_yoy_pct": _pct(p - prev_p, abs(prev_p)) if (p is not None and prev_p) else None,
+            "gross_margin_pct": _pct(gp.get(y), r),
+            "net_margin_pct": _pct(p, r),
+            "debt_ratio_pct": _pct(tl.get(y), ta.get(y)),
+            "cfo_yi": _yi(cfo.get(y)),
+            # 负权益下 ROE 会负负得正、看起来像盈利 —— 留空并标记
+            "roe_pct": _pct(p, equity) if (equity is not None and equity > 0) else None,
+        }
+        if equity is not None and equity <= 0:
+            row["equity_negative"] = True
+        out.append(row)
+    return out
+
+
+def fetch_hk_financials(symbol: str) -> list[dict]:
+    """拉港股年度财务（yfinance）。带硬超时——yfinance 爬 Yahoo 会挂起。"""
+    def _work():
+        import yfinance as yf
+
+        t = yf.Ticker(yf_hk_ticker(symbol))
+        def to_map(df):
+            if df is None or df.empty:
+                return {}
+            return {str(idx): {str(c)[:4]: (df.loc[idx, c] if df.loc[idx, c] == df.loc[idx, c] else None)
+                               for c in df.columns}
+                    for idx in df.index}
+        inc, bs, cf = to_map(t.income_stmt), to_map(t.balance_sheet), to_map(t.cashflow)
+        years = sorted({y for row in inc.values() for y in row})
+        return build_hk_annual(inc, bs, cf, years)
+
+    return call_with_timeout(_work, _HK_TIMEOUT_S, label=f"yfinance-fin[{symbol}]")
+
+
+def yf_hk_ticker(symbol: str) -> str:
+    """港股代码 → yfinance 格式（4 位零填充）。与 consensus 脚本同规则。"""
+    digits = str(symbol).strip()
+    if not digits.isdigit():
+        raise ValueError(f"港股代码应为纯数字，得到 {symbol!r}")
+    return f"{int(digits):04d}.HK"
+
+
+def call_with_timeout(fn, timeout_s: int, label: str = ""):
+    """daemon 线程 + join 硬超时。yfinance/akshare 内部 requests 普遍不带 timeout。"""
+    import threading
+
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["error"] = e
+
+    th = threading.Thread(target=_worker, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    if th.is_alive():
+        raise TimeoutError(f"{label or 'call'} 超过 {timeout_s}s 未返回（上游疑似挂起）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 # ── main builder ───────────────────────────────────────────────────────────────
 def build_financials(stock: dict) -> dict:
     symbol = stock["symbol"]
@@ -290,7 +411,34 @@ def main() -> int:
     for stock in stocks:
         symbol = stock["symbol"]
         if stock.get("exchange") == "HK":
-            print(f"  [{symbol}] 港股财务不走 akshare，人工维护，跳过")
+            # 2026-08-05 起走 yfinance（akshare 只支持 A 股）。失败不中断其余标的。
+            try:
+                annual = fetch_hk_financials(symbol)
+                if not annual:
+                    raise ValueError("yfinance 未返回年度财务")
+                data = {
+                    "symbol": symbol,
+                    "name": stock["name"],
+                    "currency": stock.get("consensus_currency", "CNY"),
+                    "source": "yfinance",
+                    "_note": ("港股财务取自 yfinance（akshare 不支持港股）。"
+                              "股东数据不可得（东财/akshare 均只覆盖 A 股）。"
+                              "权益为负时 ROE 留空——负负得正会显示成高盈利。"),
+                    "updated_at": datetime.now(BJT).isoformat(timespec="seconds"),
+                    "annual": annual,
+                    "latest_quarter": None,
+                    "latest_annual": annual[-1],
+                }
+                write_and_deploy(stock["snapshot_key"], data)
+                la = annual[-1]
+                print(f"  [{symbol}] ✓（港股/yfinance）最新年报={la.get('year')} "
+                      f"营收={la.get('revenue_yi')}亿  净利={la.get('profit_yi')}亿  "
+                      f"ROE={la.get('roe_pct') if la.get('roe_pct') is not None else '—(负权益)'}")
+            except Exception as e:
+                msg = f"[{symbol}] {stock['name']} FAILED(yfinance): {type(e).__name__}: {e}"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                errors.append(msg)
+            time.sleep(0.5)
             continue
         try:
             data = build_financials(stock)
