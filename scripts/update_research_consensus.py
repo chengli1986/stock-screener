@@ -341,6 +341,127 @@ def broker_stats(per_year: dict[str, list[float]],
     return out
 
 
+# ── 港股一致预期（yfinance）────────────────────────────────────────────────────
+#
+# 分工：A 股走同花顺 + 东财 F10；**港股全部走 yfinance**。
+# 同花顺不覆盖港股、东财 F10 ProfitForecast 仅支持 A 股、Longbridge 账户无基本面
+# 数据权限（实测连腾讯 0700.HK 的 financial-report 都返回空）——yfinance 是实测唯一可用源。
+
+_YF_TIMEOUT_S = 45
+
+
+def yf_ticker(symbol: str) -> str:
+    """港股代码 → yfinance 格式（4 位零填充 + `.HK`）。
+
+    实测：`2513.HK` ✓ / `02513.HK` ✗；`0700.HK` ✓ / `700.HK` ✗。
+    注册表里智谱存的是 5 位的 `02513`，必须归一。
+    """
+    digits = str(symbol).strip()
+    if not digits.isdigit():
+        raise ValueError(f"港股代码应为纯数字，得到 {symbol!r}")
+    return f"{int(digits):04d}.HK"
+
+
+def resolve_forecast_years(next_fiscal_year_end) -> dict[str, str]:
+    """`nextFiscalYearEnd` 时间戳 → `{'0y': '2026E', '+1y': '2027E'}`。
+
+    yfinance 的 `0y` / `+1y` 是「当前财年 / 下一财年」这种**相对期**，跨年会自动平移。
+    直接写死年份会在跨年后错位，故用财年末锚定实际年份。
+    **拿不到锚点就返回空** —— 宁可没有预测，也不能把年份猜错后写进估值分母。
+    """
+    if not next_fiscal_year_end:
+        return {}
+    try:
+        year = datetime.fromtimestamp(int(next_fiscal_year_end), timezone.utc).year
+    except (ValueError, TypeError, OSError):
+        return {}
+    return {"0y": f"{year}E", "+1y": f"{year + 1}E"}
+
+
+def parse_yf_estimates(revenue_est, earnings_est, next_fiscal_year_end) -> dict[str, dict]:
+    """yfinance 预测 → 与 `parse_em_estimates` **同构**的 estimates。
+
+    字段名刻意与 A 股路径一致，页面水合逻辑无需分市场处理。
+    只取年度期（`0y`/`+1y`），季度期 `0q`/`+1q` 不进年度估值分母。
+    yfinance 对无覆盖期返回 0，不能当成「预测为零」——一律省略该字段。
+    """
+    years = resolve_forecast_years(next_fiscal_year_end)
+    out: dict[str, dict] = {}
+    for period, label in years.items():
+        rec: dict = {}
+        r = (revenue_est or {}).get(period) or {}
+        avg = r.get("avg")
+        if avg:  # 0 视同缺失
+            rec["revenue_yuan"] = _round_yuan(avg)
+            rec["revenue_orgs"] = int(r["numberOfAnalysts"]) if r.get("numberOfAnalysts") else None
+            if r.get("low"):
+                rec["revenue_min_yuan"] = _round_yuan(r["low"])
+            if r.get("high"):
+                rec["revenue_max_yuan"] = _round_yuan(r["high"])
+        e = (earnings_est or {}).get(period) or {}
+        eps = e.get("avg")
+        # EPS 为负是合法值（智谱在亏损），不能用真值判断丢掉
+        if eps is not None and eps == eps:  # 排除 NaN
+            rec["eps"] = eps
+            rec["eps_orgs"] = int(e["numberOfAnalysts"]) if e.get("numberOfAnalysts") else None
+        if rec:
+            out[label] = rec
+    return out
+
+
+def parse_yf_ratings(recommendations, price_targets) -> dict | None:
+    """yfinance 评级分布 + 目标价 → 与 `parse_em_ratings` 同构。"""
+    rows = list(recommendations or [])
+    if not rows:
+        return None
+    cur = rows[0]
+    buckets = {k: int(cur.get(k) or 0) for k in
+               ("strongBuy", "buy", "hold", "sell", "strongSell")}
+    pt = price_targets or {}
+    return {
+        "window": cur.get("period") or "0m",
+        "orgs": sum(buckets.values()),
+        "buy": buckets["buy"],
+        "strong_buy": buckets["strongBuy"],
+        "hold": buckets["hold"],
+        "sell": buckets["sell"],
+        "strong_sell": buckets["strongSell"],
+        "target_mean": pt.get("mean"),
+        "target_median": pt.get("median"),
+        "target_high": pt.get("high"),
+        "target_low": pt.get("low"),
+    }
+
+
+def fetch_yf(symbol: str) -> dict:
+    """拉 yfinance 港股一致预期。加硬超时——yfinance 爬 Yahoo，会被限流/改版卡住。"""
+    import yfinance as yf
+
+    ticker = yf_ticker(symbol)
+
+    def _work():
+        t = yf.Ticker(ticker)
+        info = t.info
+        rev = t.revenue_estimate
+        earn = t.earnings_estimate
+        to_dict = lambda df: (  # noqa: E731
+            {str(i): {k: v for k, v in row.items()} for i, row in df.to_dict("index").items()}
+            if df is not None and not df.empty else {}
+        )
+        recs = t.recommendations
+        return {
+            "estimates": parse_yf_estimates(to_dict(rev), to_dict(earn),
+                                            info.get("nextFiscalYearEnd")),
+            "ratings": parse_yf_ratings(
+                recs.to_dict("records") if recs is not None and not recs.empty else [],
+                t.analyst_price_targets),
+            "financial_currency": info.get("financialCurrency"),
+            "quote_currency": info.get("currency"),
+        }
+
+    return call_with_timeout(_work, _YF_TIMEOUT_S, label=f"yfinance[{ticker}]")
+
+
 # ── 稳健统计：新鲜度加权 + MAD 离群标记 ────────────────────────────────────────
 #
 # 分析师预测不满足正态假设：每个人锚定同一份公司指引、看得到彼此的数、且职业风险
@@ -751,9 +872,52 @@ def main() -> int:
     for stock in stocks:
         symbol, name = stock["symbol"], stock["name"]
         if stock.get("exchange") == "HK":
-            # 同花顺不覆盖港股;券商个体预测表口径不同(无一致均值、无营收),
-            # 强行混进同一份 JSON 会让下游误以为口径一致。留人工维护。
-            skipped_hk.append(f"{symbol} {name}")
+            # 港股走 yfinance（2026-08-04 起）。同花顺不覆盖港股、东财 F10 仅支持 A 股、
+            # Longbridge 账户无基本面权限——yfinance 是实测唯一可用源。
+            # 产出结构与 A 股同构，页面水合逻辑无需分市场处理；
+            # 但只有单源，cross_check 一律 UNVERIFIED（待第 3 步接 akshare ET 交叉）。
+            try:
+                yf_data = fetch_yf(symbol)
+                est = yf_data["estimates"]
+                if not est:
+                    raise ValueError("yfinance 返回空预测（财年锚点或覆盖缺失）")
+                record = {
+                    "symbol": symbol,
+                    "name": name,
+                    "source": "yfinance",
+                    "fetched_at": fetched_at,
+                    "estimates": est,
+                    "deltas_vs_registry": compare_with_registry(
+                        stock,
+                        {y: {"revenue": v.get("revenue_yuan")} for y, v in est.items()},
+                    ),
+                    "cross_check": cross_check(
+                        {y: {"revenue_yuan": v.get("revenue_yuan")} for y, v in est.items()},
+                        {}, args.threshold,
+                    ),
+                    "cross_source": None,
+                    "ratings": yf_data.get("ratings"),
+                    "financial_currency": yf_data.get("financial_currency"),
+                    "quote_currency": yf_data.get("quote_currency"),
+                }
+                record["cross_check_summary"] = cross_check_summary(record["cross_check"])
+                if not args.dry_run:
+                    write_and_deploy(stock["snapshot_key"], record)
+                flagged = significant_changes(record["deltas_vs_registry"], args.threshold)
+                flagged_all.extend((name, d) for d in flagged)
+                e0 = next(iter(est.values()), {})
+                print(
+                    f"  [{symbol}] ✓ {name}（港股/yfinance）"
+                    f"  {next(iter(est), '—')} 营收{_fmt_yi(e0.get('revenue_yuan'))}"
+                    f"  机构{e0.get('revenue_orgs') or '—'}家"
+                    f"  币种{yf_data.get('financial_currency')}"
+                    f"{'  ⚠' + str(len(flagged)) + '项显著变动' if flagged else ''}"
+                )
+            except Exception as e:
+                msg = f"[{symbol}] {name} FAILED(yfinance): {type(e).__name__}: {e}"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                errors.append(msg)
+            time.sleep(1.0)
             continue
 
         try:

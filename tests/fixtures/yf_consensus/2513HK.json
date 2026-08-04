@@ -1,0 +1,118 @@
+{
+ "info_subset": {
+  "currency": "HKD",
+  "financialCurrency": "CNY",
+  "lastFiscalYearEnd": 1767139200,
+  "nextFiscalYearEnd": 1798675200,
+  "marketCap": 456989179904
+ },
+ "revenue_estimate": {
+  "0q": {
+   "avg": 0,
+   "low": 0,
+   "high": 0,
+   "numberOfAnalysts": 0,
+   "yearAgoRevenue": null,
+   "growth": null,
+   "currency": "CNY"
+  },
+  "+1q": {
+   "avg": 0,
+   "low": 0,
+   "high": 0,
+   "numberOfAnalysts": 0,
+   "yearAgoRevenue": null,
+   "growth": null,
+   "currency": "CNY"
+  },
+  "0y": {
+   "avg": 3730110510,
+   "low": 2484150000,
+   "high": 5498000000,
+   "numberOfAnalysts": 16,
+   "yearAgoRevenue": 724334000.0,
+   "growth": 4.1497,
+   "currency": "CNY"
+  },
+  "+1y": {
+   "avg": 9538914610,
+   "low": 4679970000,
+   "high": 14355000000,
+   "numberOfAnalysts": 13,
+   "yearAgoRevenue": 3730110510.0,
+   "growth": 1.5573,
+   "currency": "CNY"
+  }
+ },
+ "earnings_estimate": {
+  "0q": {
+   "avg": null,
+   "low": null,
+   "high": null,
+   "yearAgoEps": null,
+   "numberOfAnalysts": null,
+   "growth": null,
+   "currency": "CNY"
+  },
+  "+1q": {
+   "avg": null,
+   "low": null,
+   "high": null,
+   "yearAgoEps": null,
+   "numberOfAnalysts": null,
+   "growth": null,
+   "currency": "CNY"
+  },
+  "0y": {
+   "avg": -9.32035,
+   "low": -12.99,
+   "high": -5.36748,
+   "yearAgoEps": -19.94689,
+   "numberOfAnalysts": 13.0,
+   "growth": 0.5327,
+   "currency": "CNY"
+  },
+  "+1y": {
+   "avg": -8.99494,
+   "low": -15.94593,
+   "high": -2.9369,
+   "yearAgoEps": -9.32035,
+   "numberOfAnalysts": 12.0,
+   "growth": 0.0349,
+   "currency": "CNY"
+  }
+ },
+ "analyst_price_targets": {
+  "current": 1025.0,
+  "high": 2308.8208,
+  "low": 613.502,
+  "mean": 1615.8976,
+  "median": 1576.0771
+ },
+ "recommendations": [
+  {
+   "period": "0m",
+   "strongBuy": 4,
+   "buy": 10,
+   "hold": 3,
+   "sell": 1,
+   "strongSell": 0
+  },
+  {
+   "period": "-1m",
+   "strongBuy": 3,
+   "buy": 10,
+   "hold": 3,
+   "sell": 1,
+   "strongSell": 0
+  },
+  {
+   "period": "-2m",
+   "strongBuy": 3,
+   "buy": 7,
+   "hold": 2,
+   "sell": 0,
+   "strongSell": 0
+  }
+ ]
+}
