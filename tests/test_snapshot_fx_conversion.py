@@ -142,3 +142,41 @@ class TestAShareSnapshotUnaffected:
         m_fx.assert_not_called(), "A 股不该触发汇率抓取"
         assert snap["pe_estimates"]["2026E"] == pytest.approx(1_200_100_000_000 / 30_394_000_000, abs=0.1)
         assert snap.get("fx_rate") is None
+
+
+# ── 汇率抓取必须有硬超时 ──────────────────────────────────────────────────────
+#
+# `fetch_fx_rate` 走 yfinance（爬 Yahoo），与 akshare 一样可能无限期挂起。
+# 快照 cron 只有 300s 超时且**每交易日**运行——一次挂起会让全池 11 只都拿不到快照。
+# 这与今天在同花顺（挂起 9.5 分钟）和经济通（挂起 >150s）上踩的是同一个坑。
+
+
+def test_call_with_timeout_helper_exists():
+    """快照脚本需要自己的超时守卫（与 consensus 脚本各自独立，不跨文件依赖）。"""
+    assert callable(getattr(urs, "call_with_timeout", None))
+
+
+def test_fx_fetch_times_out_rather_than_hanging(monkeypatch):
+    import time
+
+    def _hang(*a, **kw):
+        time.sleep(30)
+
+    monkeypatch.setattr(urs, "_fetch_fx_rate_raw", _hang, raising=False)
+    monkeypatch.setattr(urs, "_FX_TIMEOUT_S", 1, raising=False)
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        urs.fetch_fx_rate("HKD", "CNY")
+    assert time.monotonic() - start < 8, "未在限期内放弃，守卫无效"
+
+
+def test_fx_fetch_returns_rate_when_fast(monkeypatch):
+    monkeypatch.setattr(urs, "_fetch_fx_rate_raw", lambda t: 0.8604, raising=False)
+
+    assert urs.fetch_fx_rate("HKD", "CNY") == pytest.approx(0.8604)
+
+
+def test_fx_fetch_rejects_unconfigured_pair():
+    with pytest.raises(ValueError, match="汇率代码"):
+        urs.fetch_fx_rate("USD", "JPY")

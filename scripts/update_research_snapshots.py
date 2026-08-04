@@ -397,17 +397,52 @@ def convert_market_cap(cap: float, from_ccy: str, to_ccy: str, fx_rate: float | 
     return cap * fx_rate
 
 
-def fetch_fx_rate(from_ccy: str, to_ccy: str) -> float:
-    """取即期汇率（yfinance）。仅在港股路径被调用。"""
-    ticker = _FX_TICKER.get((from_ccy, to_ccy))
-    if not ticker:
-        raise ValueError(f"未配置汇率代码 {from_ccy}->{to_ccy}")
+_FX_TIMEOUT_S = 30
+
+
+def call_with_timeout(fn, timeout_s: int, label: str = ""):
+    """给没有 timeout 参数的调用施加硬性上限（daemon 线程 + join）。
+
+    yfinance 爬 Yahoo，与 akshare 一样可能无限期挂起；而本脚本的 cron 只有 300s
+    且**每交易日**运行——一次挂起会让全池 11 只都拿不到快照。
+    worker 抛出的真实异常原样传播，不伪装成超时。
+    """
+    import threading
+
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001 —— 需原样带回主线程
+            box["error"] = e
+
+    th = threading.Thread(target=_worker, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    if th.is_alive():
+        raise TimeoutError(f"{label or 'call'} 超过 {timeout_s}s 未返回（上游疑似挂起）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _fetch_fx_rate_raw(ticker: str) -> float:
     import yfinance as yf
 
     hist = yf.Ticker(ticker).history(period="5d")
     if hist is None or hist.empty:
         raise ValueError(f"{ticker} 无汇率数据")
     return float(hist["Close"].iloc[-1])
+
+
+def fetch_fx_rate(from_ccy: str, to_ccy: str) -> float:
+    """取即期汇率（yfinance）。仅在港股路径被调用，带硬超时。"""
+    ticker = _FX_TICKER.get((from_ccy, to_ccy))
+    if not ticker:
+        raise ValueError(f"未配置汇率代码 {from_ccy}->{to_ccy}")
+    return call_with_timeout(lambda: _fetch_fx_rate_raw(ticker),
+                             _FX_TIMEOUT_S, label=f"fx[{ticker}]")
 
 
 def format_return_summary(snapshot: dict) -> str:
