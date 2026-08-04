@@ -330,6 +330,41 @@ def compute_technicals(rows: list, symbol: str = "") -> dict:
     }
 
 
+# ── 估值分母来源：自动抓取优先，注册表兜底 ────────────────────────────────────
+#
+# 2026-08-04 审计发现：`update_research_consensus.py` 的产物落在
+# `{key}-consensus.json`，但本脚本算 PE/PS 一直用 `research_stocks.json` 的冻结值，
+# 而研报页读的是本脚本的快照 → **页面估值倍数一直是化石**
+# （寒武纪 2027E PE 页面 90.3 vs 应为 59.3，高估 52%）。
+# 同时观察池卡片已接 consensus.json，导致同一网站两处 PE 不一致。
+#
+# 注册表当「人工权威口径」的原意是「自动抓取需人工把关」，但把关已由双源交叉复核 +
+# 中位数 + 离群标记 + 背离告警自动化，再留人工闸门只会制造化石。故改为自动优先。
+
+
+def load_consensus_estimates(snapshot_key: str, data_dir: pathlib.Path | None = None) -> dict:
+    """读 `{key}-consensus.json` 的 estimates。文件缺失/损坏一律返回 {} 交由兜底。"""
+    base = data_dir if data_dir is not None else DATA_DIR
+    f = pathlib.Path(base) / f"{snapshot_key}-consensus.json"
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text(encoding="utf-8")).get("estimates") or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def resolve_consensus(stock: dict, data_dir: pathlib.Path | None = None) -> tuple[dict, str]:
+    """返回 `(estimates, source)`，source ∈ {"auto", "registry"}。
+
+    自动源为空（抓取失败留下的空壳）时回落注册表——**不能让空文件把估值分母清空**。
+    """
+    auto = load_consensus_estimates(stock.get("snapshot_key", ""), data_dir)
+    if auto:
+        return auto, "auto"
+    return stock.get("consensus") or {}, "registry"
+
+
 # ── 币种换算（港股）────────────────────────────────────────────────────────────
 #
 # 智谱 02513.HK 的市值报价是 HKD，而机构一致预期的营收/净利是 CNY
@@ -392,7 +427,6 @@ def format_return_summary(snapshot: dict) -> str:
 def build_snapshot(stock: dict) -> dict:
     symbol = stock["symbol"]
     exchange = stock["exchange"]
-    consensus = stock["consensus"]
 
     print(f"  [{symbol}] 拉取实时行情 (腾讯 qt 主 / push2 备)...", flush=True)
     quote = fetch_quote_data(symbol, exchange)
@@ -416,6 +450,8 @@ def build_snapshot(stock: dict) -> dict:
         print(f"  [{symbol}] 汇率 {q_ccy}->{c_ccy} = {fx_rate:.4f}", flush=True)
     # 仅用于估值分母对齐；展示用的 market_cap_yi 仍保持报价币种
     valuation_cap = convert_market_cap(market_cap_yuan, q_ccy, c_ccy, fx_rate)
+
+    consensus, consensus_source = resolve_consensus(stock)
 
     valuation_mode = stock.get("valuation_mode", "pe")
     pe_estimates: dict[str, float] = {}
@@ -441,6 +477,7 @@ def build_snapshot(stock: dict) -> dict:
         "pe_estimates": pe_estimates,
         "ps_estimates": ps_estimates,
         # 汇率与币种落盘，否则事后无法复算 PS/PE 是怎么来的
+        "consensus_source": consensus_source,
         "quote_currency": q_ccy,
         "consensus_currency": c_ccy,
         "fx_rate": round(fx_rate, 6) if fx_rate else None,

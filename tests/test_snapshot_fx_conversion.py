@@ -130,10 +130,12 @@ class TestAShareSnapshotUnaffected:
               "vol_ratio_5_60": 1.3, "week52_high": 1416.88, "week52_low": 195.8,
               "week52_is_full": True}
 
-    def test_a_share_pe_unchanged_and_no_fx_fetch(self):
+    def test_a_share_pe_unchanged_and_no_fx_fetch(self, tmp_path):
+        # DATA_DIR 指向空目录：本用例验证注册表兜底路径，不应受真实 consensus.json 影响
         import unittest.mock as mock
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
+             mock.patch.object(urs, "DATA_DIR", tmp_path), \
              mock.patch.object(urs, "fetch_fx_rate") as m_fx:
             snap = urs.build_snapshot(self._STOCK)
 

@@ -198,9 +198,14 @@ class TestBuildSnapshotUsesQuoteData:
         "week52_high": 1320.0, "week52_low": 89.85,
     }
 
-    def test_snapshot_built_from_quote_data(self):
-        """build_snapshot 调用 fetch_quote_data(而非直接 fetch_em_data)。"""
+    def test_snapshot_built_from_quote_data(self, tmp_path):
+        """build_snapshot 调用 fetch_quote_data(而非直接 fetch_em_data)。
+
+        DATA_DIR 指向空目录:本用例断言的是注册表口径的 PE,
+        不应受真实 {key}-consensus.json 影响(2026-08-04 起自动源优先)。
+        """
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE) as m_q, \
+             mock.patch.object(urs, "DATA_DIR", tmp_path), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV):
             snap = urs.build_snapshot(self._STOCK)
         m_q.assert_called_once_with("300308", "SZ")
