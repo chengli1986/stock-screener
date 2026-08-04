@@ -289,16 +289,151 @@ def cross_check_summary(checks: dict) -> dict[str, int]:
     return tally
 
 
+# 中位数最小样本量：低于此值不给中位数（长鑫 2 家 / 长光华芯 3 家覆盖，算了也是假精度）
+MIN_MEDIAN_SAMPLES: int = 5
+
+
+def parse_em_broker_estimates(ycmx: list[dict] | None) -> dict[str, list[float]]:
+    """`ycmx` 逐家明细 → `{'2026E': [各家归母净利…]}`。
+
+    年份轴按 `YEAR_MARK` **动态**映射，不能写死 `YEAR2=2026`——不同标的、
+    跨年后位次都会变。`'A'` 是已披露实际值，剔除。
+    """
+    out: dict[str, list[float]] = {}
+    for row in ycmx or []:
+        for i in (1, 2, 3, 4):
+            if str(row.get(f"YEAR_MARK{i}")) != "E":
+                continue
+            year = row.get(f"YEAR{i}")
+            value = row.get(f"PARENT_NETPROFIT{i}")
+            if year is None or value is None:
+                continue
+            out.setdefault(f"{year}E", []).append(float(value))
+    return out
+
+
+def broker_stats(per_year: dict[str, list[float]],
+                 min_samples: int = MIN_MEDIAN_SAMPLES) -> dict[str, dict]:
+    """逐家预测 → 中位数/均值/极值/样本数。
+
+    **样本不足时不给中位数** —— 长鑫仅 2 家、长光华芯 3 家覆盖，
+    对这类标的算中位数是假精度。留 None 并置 `insufficient_samples`，
+    与 cross_check 里 UNVERIFIED 的处理哲学一致：说不知道，好过给个看起来很准的数。
+    min/max 即便样本少也仍是真信息，照常给出。
+    """
+    out: dict[str, dict] = {}
+    for year, values in sorted((per_year or {}).items()):
+        vals = sorted(v for v in values if v is not None)
+        if not vals:
+            continue
+        n = len(vals)
+        enough = n >= min_samples
+        mid = n // 2
+        median = (vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2) if enough else None
+        out[year] = {
+            "median": _round_yuan(median),
+            "mean": _round_yuan(sum(vals) / n),
+            "min": _round_yuan(vals[0]),
+            "max": _round_yuan(vals[-1]),
+            "count": n,
+            "insufficient_samples": not enough,
+        }
+    return out
+
+
+# ── 背离告警邮件 ───────────────────────────────────────────────────────────────
+
+_ENV_FILE = pathlib.Path.home() / ".stock-monitor.env"
+
+
+def build_divergence_alert_html(rows: list[dict], fetched_at: str) -> str | None:
+    """两源背离 → 告警邮件正文。无背离返回 None（不发空邮件）。"""
+    if not rows:
+        return None
+    import html as _html
+
+    trs = []
+    for r in rows:
+        label = "净利" if r["field"] == "profit" else "营收"
+        trs.append(
+            "<tr>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd'>{_html.escape(str(r['name']))}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd'>{_html.escape(str(r['year']))}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd'>{label}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd;text-align:right'>{r['primary'] / 1e8:.1f} 亿</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd;text-align:right'>{r['secondary'] / 1e8:.1f} 亿</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #ddd;text-align:right;color:#c00'>{r['diff_pct']:+.1f}%</td>"
+            "</tr>"
+        )
+    return (
+        "<html><body style='font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;color:#222'>"
+        "<h2 style='color:#c00;margin:0 0 6px'>一致预期两源背离告警</h2>"
+        f"<p style='margin:0 0 14px;color:#666'>抓取时间 {_html.escape(fetched_at)}　·　"
+        "主源 同花顺　vs　交叉源 东方财富 F10</p>"
+        "<table style='border-collapse:collapse;font-size:13px'>"
+        "<tr style='background:#f5f5f5'>"
+        "<th style='padding:6px 10px;text-align:left'>标的</th>"
+        "<th style='padding:6px 10px;text-align:left'>年度</th>"
+        "<th style='padding:6px 10px;text-align:left'>口径</th>"
+        "<th style='padding:6px 10px;text-align:right'>同花顺</th>"
+        "<th style='padding:6px 10px;text-align:right'>东财</th>"
+        "<th style='padding:6px 10px;text-align:right'>差异</th>"
+        "</tr>" + "".join(trs) + "</table>"
+        "<p style='margin:16px 0 0;color:#666;font-size:12px'>"
+        "两源差异超过门槛，说明该标的的一致预期本身分歧较大或某一源口径异常，"
+        "使用其 PE/PEG 时请留意。本邮件由 <code>update_research_consensus.py</code> 自动发出。</p>"
+        "</body></html>"
+    )
+
+
+def _load_env() -> dict:
+    env: dict[str, str] = {}
+    if not _ENV_FILE.exists():
+        return env
+    for line in _ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        env[k.strip()] = v.strip().strip('"')
+    return env
+
+
+def send_divergence_alert(html_body: str, subject: str) -> None:
+    """走与 research_data_health.py 同款的 163 SMTP_SSL 通道。"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    env = _load_env()
+    if not env.get("SMTP_USER") or not env.get("SMTP_PASS"):
+        print("WARN: 未找到 SMTP 凭据，跳过告警邮件", file=sys.stderr)
+        return
+    to_addr = env.get("MAIL_TO", env["SMTP_USER"])
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = env["SMTP_USER"]
+    msg["To"] = to_addr
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    with smtplib.SMTP_SSL(env.get("SMTP_SERVER", "smtp.163.com"),
+                          int(env.get("SMTP_PORT", "465")), timeout=30) as s:
+        s.login(env["SMTP_USER"], env["SMTP_PASS"])
+        s.sendmail(env["SMTP_USER"], [to_addr], msg.as_string())
+    print(f"  背离告警邮件已发送 → {to_addr}", flush=True)
+
+
 def fetch_em(symbol: str, exchange: str) -> dict:
     """拉东财 F10 盈利预测。返回 `{estimates, ratings, brokers}`。"""
     r = requests.get(_EM_F10_URL, params={"code": em_secid(symbol, exchange)},
                      timeout=25, headers=_EM_HEADERS)
     r.raise_for_status()
     d = r.json()
+    ycmx = d.get("ycmx")
     return {
         "estimates": parse_em_estimates(d.get("yctj_list")),
         "ratings": parse_em_ratings(d.get("pjtj")),
-        "brokers": parse_em_brokers(d.get("ycmx")),
+        "brokers": parse_em_brokers(ycmx),
+        "broker_stats": broker_stats(parse_em_broker_estimates(ycmx)),
     }
 
 
@@ -347,11 +482,46 @@ def build_record(
 # ── 抓取层(I/O)────────────────────────────────────────────────────────────────
 
 
+_THS_TIMEOUT_S = 45
+
+
+def call_with_timeout(fn, timeout_s: int, label: str = ""):
+    """给没有 timeout 参数的调用施加硬性上限（daemon 线程 + join）。
+
+    akshare `stock_profit_forecast_ths` 内部是 `requests.get(url, headers=headers)`，
+    **不带 timeout**——2026-08-04 实测在贵州茅台上挂起 9.5 分钟不返回，
+    会让 cron 跑满 900s 被 SIGKILL、剩余标的全部无数据。
+    与 `phase0_spike._fetch_csi_once`（`8ca09ad`）同款守卫。
+
+    worker 抛出的真实异常原样传播，不伪装成超时——否则排查时会误判上游状态。
+    """
+    import threading
+
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001 —— 需原样带回主线程
+            box["error"] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        raise TimeoutError(f"{label or 'call'} 超过 {timeout_s}s 未返回（上游疑似挂起）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def fetch_ths(symbol: str) -> tuple[dict, dict]:
     """拉同花顺两张表,返回 `(parsed, dispersion)`。akshare 在函数内 import 以便测试免装。"""
     import akshare as ak
 
-    detail = ak.stock_profit_forecast_ths(symbol=symbol, indicator="业绩预测详表-详细指标预测")
+    detail = call_with_timeout(
+        lambda: ak.stock_profit_forecast_ths(symbol=symbol, indicator="业绩预测详表-详细指标预测"),
+        _THS_TIMEOUT_S, label=f"ths-detail[{symbol}]")
     if detail is None or detail.empty:
         raise ValueError("同花顺无业绩预测详表(可能本年度暂无机构预测)")
     parsed = parse_ths_detail(detail.columns.tolist(), detail.astype(str).values.tolist())
@@ -359,7 +529,9 @@ def fetch_ths(symbol: str) -> tuple[dict, dict]:
         raise ValueError("详细指标预测表解析出 0 条金额(上游表结构可能已变)")
 
     try:
-        prof = ak.stock_profit_forecast_ths(symbol=symbol, indicator="预测年报净利润")
+        prof = call_with_timeout(
+            lambda: ak.stock_profit_forecast_ths(symbol=symbol, indicator="预测年报净利润"),
+            _THS_TIMEOUT_S, label=f"ths-dispersion[{symbol}]")
         dispersion = (
             parse_ths_dispersion(prof.columns.tolist(), prof.astype(str).values.tolist())
             if prof is not None and not prof.empty
@@ -391,6 +563,7 @@ def main() -> int:
                     help=f"显著变动门槛百分比(默认 {DEFAULT_THRESHOLD_PCT})")
     ap.add_argument("--dry-run", action="store_true", help="只打印对比,不写任何文件")
     ap.add_argument("--symbol", help="只跑单只股票(调试用)")
+    ap.add_argument("--no-email", action="store_true", help="有背离也不发告警邮件")
     args = ap.parse_args()
 
     stocks = json.loads(REGISTRY.read_text(encoding="utf-8"))
@@ -437,6 +610,7 @@ def main() -> int:
             if em:
                 record["ratings"] = em.get("ratings")
                 record["brokers"] = em.get("brokers")
+                record["broker_stats"] = em.get("broker_stats")
 
             if not args.dry_run:
                 write_and_deploy(stock["snapshot_key"], record)
@@ -481,6 +655,17 @@ def main() -> int:
                 f"  {name} {d['year']} {label}: {_fmt_yi(d['frozen'])} → "
                 f"{_fmt_yi(d['latest'])}  ({d['delta_pct']:+.1f}%)"
             )
+
+    if divergent_all and not args.dry_run and not args.no_email:
+        html = build_divergence_alert_html(
+            [{"name": n, "year": y, "field": f, **it} for n, y, f, it in divergent_all],
+            fetched_at,
+        )
+        if html:
+            try:
+                send_divergence_alert(html, f"[一致预期] 两源背离 {len(divergent_all)} 项 — {fetched_at[:10]}")
+            except Exception as e:
+                print(f"WARN: 告警邮件发送失败（{type(e).__name__}: {e}）", file=sys.stderr)
 
     if errors:
         print(f"\n=== FAILED ({len(errors)}/{len(stocks)}) ===", file=sys.stderr)
