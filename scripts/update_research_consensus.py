@@ -29,6 +29,8 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 
+import requests
+
 BJT = timezone(timedelta(hours=8))
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -171,6 +173,135 @@ def significant_changes(deltas: list[dict], threshold_pct: float = DEFAULT_THRES
     ]
 
 
+# ── 第三方交叉复核（东方财富 F10，独立于同花顺）────────────────────────────────
+#
+# 单一数据源无从判断对错，人工 Wind 复核不可持续。东财 F10 ProfitForecast 与同花顺
+# 采集口径独立，且多给三样东西：一致预期各字段的机构数、逐家机构明细+发布日期、
+# 评级统计。2026-08-03 首次全池实测：40 项比对 39 项差异 <10%。
+
+_EM_F10_URL = "https://emweb.securities.eastmoney.com/PC_HSF10/ProfitForecast/PageAjax"
+_EM_HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+# 6 月内窗口的机构数与同花顺口径最接近，用它做对照
+_EM_RATING_WINDOW = "6月内"
+
+
+def em_secid(symbol: str, exchange: str) -> str:
+    """A 股代码 → 东财 F10 格式（`SZ300308`）。港股不走该接口，显式拒绝。
+
+    静默返回一个错误格式会让抓取「成功但为空」，比直接报错更难排查。
+    """
+    if exchange not in ("SH", "SZ"):
+        raise ValueError(f"东财 F10 ProfitForecast 不支持 exchange={exchange}（{symbol}）")
+    return f"{exchange}{symbol}"
+
+
+def parse_em_estimates(yctj_list: list[dict]) -> dict[str, dict]:
+    """`yctj_list` → `{'2026E': {'profit_yuan', 'revenue_yuan', 'profit_orgs', 'revenue_orgs'}}`。
+
+    `YEAR_MARK == 'A'` 是已披露实际值，必须剔除，否则会把历史当预测参与比对。
+    """
+    out: dict[str, dict] = {}
+    for row in yctj_list or []:
+        if str(row.get("YEAR_MARK")) != "E":
+            continue
+        year = f"{row.get('YEAR')}E"
+        out[year] = {
+            "profit_yuan": _round_yuan(row.get("PARENT_NETPROFIT")),
+            "revenue_yuan": _round_yuan(row.get("TOTAL_OPERATE_INCOME")),
+            "profit_orgs": row.get("PARENT_NETPROFIT_COUNT"),
+            "revenue_orgs": row.get("TOTAL_OPERATE_INCOME_COUNT"),
+        }
+    return out
+
+
+def parse_em_ratings(pjtj: list[dict]) -> dict | None:
+    """`pjtj` → 6 月内窗口的评级分布。取不到该窗口返回 None（不退化到别的窗口）。"""
+    for row in pjtj or []:
+        if row.get("DATE_TYPE") != _EM_RATING_WINDOW:
+            continue
+        return {
+            "window": _EM_RATING_WINDOW,
+            "orgs": row.get("RATING_ORG_NUM"),
+            "rating": row.get("COMPRE_RATING"),
+            "rating_score": row.get("COMPRE_RATING_NUM"),
+            "buy": row.get("RATING_BUY_NUM"),
+            "add": row.get("RATING_ADD_NUM"),
+            "neutral": row.get("RATING_NEUTRAL_NUM"),
+            "reduce": row.get("RATING_REDUCE_NUM"),
+            "sale": row.get("RATING_SALE_NUM"),
+        }
+    return None
+
+
+def parse_em_brokers(ycmx: list[dict], limit: int = 20) -> list[dict]:
+    """`ycmx` → 逐家机构明细（含发布日期）。发布日期用于识别陈旧预测。"""
+    out = []
+    for row in (ycmx or [])[:limit]:
+        out.append({
+            "org": row.get("ORG_NAME_ABBR"),
+            "published": (row.get("PUBLISH_DATE") or "")[:10],
+            "profit_y2_yuan": _round_yuan(row.get("PARENT_NETPROFIT2")),
+            "profit_y3_yuan": _round_yuan(row.get("PARENT_NETPROFIT3")),
+        })
+    return out
+
+
+def cross_check(ths_est: dict, em_est: dict, threshold_pct: float = DEFAULT_THRESHOLD_PCT) -> dict:
+    """逐年逐字段比对两源，给出 CONFIRMED / DIVERGENT / UNVERIFIED。
+
+    **UNVERIFIED 与 CONFIRMED 必须区分开** —— 拿不到第二源（港股、覆盖过薄）时
+    默默当作通过，等于把「没验证」伪装成「已验证」，正是本模块要消灭的问题。
+    只比对主源（同花顺）已给出的字段：PS 模式标的注册表里没有净利，不该凭空生成比对行。
+    """
+    field_map = (("profit", "profit_yuan"), ("revenue", "revenue_yuan"))
+    out: dict[str, dict] = {}
+    for year, ths_fields in sorted((ths_est or {}).items()):
+        em_fields = (em_est or {}).get(year) or {}
+        year_out: dict[str, dict] = {}
+        for name, key in field_map:
+            primary = ths_fields.get(key)
+            if primary in (None, 0):
+                continue
+            secondary = em_fields.get(key)
+            if secondary in (None, 0):
+                year_out[name] = {"primary": primary, "secondary": None,
+                                  "diff_pct": None, "verdict": "UNVERIFIED"}
+                continue
+            diff = round((secondary / primary - 1) * 100, 2)
+            year_out[name] = {
+                "primary": primary,
+                "secondary": secondary,
+                "diff_pct": diff,
+                "verdict": "DIVERGENT" if abs(diff) >= threshold_pct else "CONFIRMED",
+            }
+        if year_out:
+            out[year] = year_out
+    return out
+
+
+def cross_check_summary(checks: dict) -> dict[str, int]:
+    """裁决计数，供控制台与告警使用。"""
+    tally: dict[str, int] = {}
+    for year_out in (checks or {}).values():
+        for item in year_out.values():
+            v = item["verdict"]
+            tally[v] = tally.get(v, 0) + 1
+    return tally
+
+
+def fetch_em(symbol: str, exchange: str) -> dict:
+    """拉东财 F10 盈利预测。返回 `{estimates, ratings, brokers}`。"""
+    r = requests.get(_EM_F10_URL, params={"code": em_secid(symbol, exchange)},
+                     timeout=25, headers=_EM_HEADERS)
+    r.raise_for_status()
+    d = r.json()
+    return {
+        "estimates": parse_em_estimates(d.get("yctj_list")),
+        "ratings": parse_em_ratings(d.get("pjtj")),
+        "brokers": parse_em_brokers(d.get("ycmx")),
+    }
+
+
 def _round_yuan(value: float | None) -> int | None:
     """`亿 → 元` 的 ×1e8 会留浮点尾巴(233407000000.00003),金额一律取整到元。"""
     return round(value) if value is not None else None
@@ -272,6 +403,7 @@ def main() -> int:
     fetched_at = datetime.now(BJT).isoformat(timespec="seconds")
     errors: list[str] = []
     flagged_all: list[tuple[str, dict]] = []
+    divergent_all: list[tuple] = []
     skipped_hk: list[str] = []
 
     for stock in stocks:
@@ -285,17 +417,44 @@ def main() -> int:
         try:
             parsed, dispersion = fetch_ths(symbol)
             record = build_record(stock, parsed, dispersion, fetched_at)
+
+            # 第三方交叉复核：东财 F10 拿不到不该让整只股票失败——
+            # 主源数据仍然有效，只是这次没被验证，如实标 UNVERIFIED。
+            em = None
+            try:
+                em = fetch_em(symbol, stock["exchange"])
+            except Exception as e:
+                print(f"WARN: [{symbol}] 东财交叉源不可用（{type(e).__name__}: {e}），本次标记为未验证",
+                      file=sys.stderr)
+            record["cross_check"] = cross_check(
+                {y: {"profit_yuan": v.get("profit_yuan"), "revenue_yuan": v.get("revenue_yuan")}
+                 for y, v in record["estimates"].items() if y.endswith("E")},
+                (em or {}).get("estimates") or {},
+                args.threshold,
+            )
+            record["cross_check_summary"] = cross_check_summary(record["cross_check"])
+            record["cross_source"] = "eastmoney_f10" if em else None
+            if em:
+                record["ratings"] = em.get("ratings")
+                record["brokers"] = em.get("brokers")
+
             if not args.dry_run:
                 write_and_deploy(stock["snapshot_key"], record)
 
             flagged = significant_changes(record["deltas_vs_registry"], args.threshold)
             flagged_all.extend((name, d) for d in flagged)
+            for year, fields in record["cross_check"].items():
+                for fname, item in fields.items():
+                    if item["verdict"] == "DIVERGENT":
+                        divergent_all.append((name, year, fname, item))
 
             e26 = record["estimates"].get("2026E", {})
             orgs = e26.get("orgs")
+            cs = record["cross_check_summary"]
+            xc = f"  交叉[确认{cs.get('CONFIRMED', 0)}/背离{cs.get('DIVERGENT', 0)}/未验{cs.get('UNVERIFIED', 0)}]"
             print(
                 f"  [{symbol}] ✓ {name}  2026E 营收{_fmt_yi(e26.get('revenue_yuan'))} "
-                f"净利{_fmt_yi(e26.get('profit_yuan'))}  机构{orgs if orgs else '—'}家"
+                f"净利{_fmt_yi(e26.get('profit_yuan'))}  机构{orgs if orgs else '—'}家{xc}"
                 f"{'  ⚠' + str(len(flagged)) + '项显著变动' if flagged else ''}"
             )
         except Exception as e:
@@ -306,6 +465,13 @@ def main() -> int:
 
     if skipped_hk:
         print(f"\n跳过港股(同花顺不覆盖,人工维护): {', '.join(skipped_hk)}")
+
+    if divergent_all:
+        print(f"\n=== 两源背离（|Δ| ≥ {args.threshold}%，同花顺 vs 东财 F10）===")
+        for name, year, fname, it in divergent_all:
+            label = "净利" if fname == "profit" else "营收"
+            print(f"  {name} {year} {label}: 同花顺 {_fmt_yi(it['primary'])} / "
+                  f"东财 {_fmt_yi(it['secondary'])}  ({it['diff_pct']:+.1f}%)")
 
     if flagged_all:
         print(f"\n=== 显著变动(|Δ| ≥ {args.threshold}%),需人工复核后同步注册表 ===")
