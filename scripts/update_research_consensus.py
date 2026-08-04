@@ -279,6 +279,47 @@ def cross_check(ths_est: dict, em_est: dict, threshold_pct: float = DEFAULT_THRE
     return out
 
 
+# 区间重叠低于此比例 → 判为样本构成分歧
+RANGE_OVERLAP_THRESHOLD_PCT = 50.0
+
+
+def range_agreement(primary: tuple | None, secondary: tuple | None) -> dict:
+    """两源预测区间的重叠度（Jaccard：交集宽 / 并集宽）。
+
+    **为什么需要它**：现有统计层只度量每个源**内部**的离散度，
+    对**源之间的样本构成差异**没有任何指标。寒武纪实测——2026E 均值只差 −1.4%
+    （判 CONFIRMED），但区间已明显分开（同花顺 [34.0, 88.8] vs 东财 [47.0, 70.3]）；
+    到 2027/2028 年均值差异才放大到 −9%/−11.5%。
+    **区间重叠度是比均值差异更早的预警。**
+
+    `secondary_contained` 为真说明主源收录了更极端的机构（次源区间被完全包住）。
+    仅适用于 A 股：港股两源指标不重叠（yfinance 营收 vs ETNet 净利），无从比较。
+    """
+    def _ok(r):
+        return r is not None and len(r) == 2 and all(v is not None for v in r)
+
+    if not (_ok(primary) and _ok(secondary)):
+        return {"overlap_pct": None, "span_ratio": None,
+                "secondary_contained": None, "verdict": "UNAVAILABLE"}
+
+    p_lo, p_hi = sorted(primary)
+    s_lo, s_hi = sorted(secondary)
+    inter = max(0.0, min(p_hi, s_hi) - max(p_lo, s_lo))
+    union = max(p_hi, s_hi) - min(p_lo, s_lo)
+
+    overlap = round(inter / union * 100, 1) if union > 0 else 100.0
+    p_span, s_span = p_hi - p_lo, s_hi - s_lo
+    span_ratio = round(s_span / p_span, 2) if p_span > 0 else None
+    contained = s_lo >= p_lo and s_hi <= p_hi
+
+    return {
+        "overlap_pct": overlap,
+        "span_ratio": span_ratio,
+        "secondary_contained": contained,
+        "verdict": "ALIGNED" if overlap >= RANGE_OVERLAP_THRESHOLD_PCT else "SAMPLE_DIVERGENT",
+    }
+
+
 def cross_check_summary(checks: dict) -> dict[str, int]:
     """裁决计数，供控制台与告警使用。"""
     tally: dict[str, int] = {}
@@ -1031,6 +1072,15 @@ def main() -> int:
             )
             record["cross_check_summary"] = cross_check_summary(record["cross_check"])
             record["cross_source"] = "eastmoney_f10" if em else None
+            # 区间重叠度：比均值差异更早的样本构成分歧预警（仅 A 股，两源同为净利口径）
+            bstats = (em or {}).get("broker_stats") or {}
+            record["range_agreement"] = {
+                y: range_agreement(
+                    (v.get("profit_min_yuan"), v.get("profit_max_yuan")),
+                    ((bstats.get(y) or {}).get("min"), (bstats.get(y) or {}).get("max")),
+                )
+                for y, v in record["estimates"].items() if y.endswith("E")
+            }
             if em:
                 record["ratings"] = em.get("ratings")
                 record["brokers"] = em.get("brokers")
