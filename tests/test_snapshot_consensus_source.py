@@ -164,3 +164,59 @@ class TestSnapshotUsesAutoConsensus:
         snap = self._build(tmp_path)
 
         assert snap["pe_estimates"]["2027E"] == pytest.approx(90.5, abs=0.3)
+
+
+# ── 只对预测年份算估值倍数 ────────────────────────────────────────────────────
+#
+# 自动源的 estimates 同时含实际年份（`2023A`/`2024A`/`2025A`，来自同花顺详细指标表的
+# 「实际值」列）与预测年份（`2026E`…）。**用今天的市值除以三年前的利润没有意义**
+# —— 首次接入方案 A 时把全部年份都算了，产出 "2023A PE 549.9" 这种数。
+
+
+def test_resolve_consensus_drops_actual_years(tmp_path):
+    _write(tmp_path, {
+        "symbol": "688256",
+        "estimates": {
+            "2024A": {"profit_yuan": 1_000_000_000},
+            "2025A": {"profit_yuan": 2_000_000_000},
+            "2026E": {"profit_yuan": 5_480_000_000},
+            "2027E": {"profit_yuan": 11_420_000_000},
+        },
+    })
+
+    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+
+    assert source == "auto"
+    assert sorted(est) == ["2026E", "2027E"], "实际年份未被剔除"
+
+
+def test_resolve_consensus_falls_back_when_only_actual_years(tmp_path):
+    """只有实际值、没有任何预测 —— 等同于没抓到，应回落注册表。"""
+    _write(tmp_path, {"symbol": "688256", "estimates": {"2025A": {"profit_yuan": 2e9}}})
+
+    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+
+    assert source == "registry"
+
+
+def test_snapshot_has_no_actual_year_multiples(tmp_path):
+    import unittest.mock as mock
+    _write(tmp_path, {
+        "symbol": "688256",
+        "estimates": {
+            "2025A": {"profit_yuan": 2_000_000_000},
+            "2026E": {"profit_yuan": 5_480_000_000},
+        },
+    })
+    q = {"price_yuan": 1080.0, "market_cap_yuan": 678_600_000_000.0,
+         "change_pct": 5.1, "vol_wan_shou": 20.0}
+    o = {"year_return_pct": 127.3, "period_return_pct": 127.3, "history_days": 241,
+         "ma20": 1298.0, "ma20_slope": "down", "vol_60d_ann_pct": 82.5,
+         "vol_ratio_5_60": 0.9, "week52_high": 1620.0, "week52_low": 448.66,
+         "week52_is_full": True}
+    with mock.patch.object(urs, "fetch_quote_data", return_value=q), \
+         mock.patch.object(urs, "fetch_ohlcv_data", return_value=o), \
+         mock.patch.object(urs, "DATA_DIR", tmp_path):
+        snap = urs.build_snapshot(_REGISTRY_STOCK)
+
+    assert list(snap["pe_estimates"]) == ["2026E"]

@@ -360,8 +360,11 @@ def resolve_consensus(stock: dict, data_dir: pathlib.Path | None = None) -> tupl
     自动源为空（抓取失败留下的空壳）时回落注册表——**不能让空文件把估值分母清空**。
     """
     auto = load_consensus_estimates(stock.get("snapshot_key", ""), data_dir)
-    if auto:
-        return auto, "auto"
+    # 自动源同时含实际年份（'2025A' 等，来自同花顺详细指标表的「实际值」列）与预测年份。
+    # **用今天的市值除以历史年份的利润没有意义**，只保留预测年（后缀 E）。
+    forecast = {y: v for y, v in auto.items() if str(y).endswith("E")}
+    if forecast:
+        return forecast, "auto"
     return stock.get("consensus") or {}, "registry"
 
 
