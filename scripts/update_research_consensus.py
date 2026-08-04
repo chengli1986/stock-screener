@@ -433,6 +433,77 @@ def parse_yf_ratings(recommendations, price_targets) -> dict | None:
     }
 
 
+# ── 港股逐家机构明细（经济通 ETNet）────────────────────────────────────────────
+#
+# 港股的一致预期验证只有**一层**能做：同一源内的多机构对比。
+# 跨源验证做不了——yfinance 给营收+EPS、ET 给净利，没有任何指标两源都有；
+# 要打通得除以股本，而股本是不确定量，会制造假的 CONFIRMED/DIVERGENT。
+#
+# 目标价与评级**只落盘展示、不参与判定**：目标价 = 盈利预测 × 假设倍数，是复合量，
+# 且两源底层券商报告重叠、一致有部分来自共享输入；评级是压缩的序数且严重偏向买入。
+#
+# 单位由 ET「去年度业绩表现」直接证实：`集团纯利 -4,698.20 百万元人民币`。
+# `每股盈利`（单位「分」）弃用——各家对未来股本假设不同，数值不可比。
+
+_ET_TIMEOUT_S = 60
+_ET_COLS = ("财政年度", "纯利/亏损", "证券商", "更新日期")
+
+
+def parse_et_brokers(columns: list[str], rows: list[list]) -> dict[str, list[dict]]:
+    """经济通「盈利预测概览」→ `{'2026E': [{'org','published','value'}]}`（value 单位：元）。"""
+    idx = {c: i for i, c in enumerate(columns)}
+    if any(c not in idx for c in _ET_COLS):
+        return {}
+
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        year = str(row[idx["财政年度"]]).strip()
+        if not year.isdigit():
+            continue
+        raw = str(row[idx["纯利/亏损"]]).strip()
+        try:
+            profit_mn = float(raw)
+        except ValueError:
+            continue  # 空值/'nan' → 该家未给该年预测
+        if raw.lower() in ("nan", ""):
+            continue
+        out.setdefault(f"{year}E", []).append({
+            "org": str(row[idx["证券商"]]).strip(),
+            "published": str(row[idx["更新日期"]]).strip()[:10],
+            "value": profit_mn * 1e6,          # 百万元 → 元
+        })
+    return out
+
+
+def fetch_et(symbol: str) -> dict:
+    """拉经济通逐家明细 + 目标价（展示用）。ET 实测会瞬时挂起，必须硬超时。"""
+    def _work():
+        import akshare as ak
+
+        df = ak.stock_hk_profit_forecast_et(symbol=symbol, indicator="盈利预测概览")
+        if df is None or df.empty:
+            return {"brokers": {}, "targets": None}
+        cols = df.columns.tolist()
+        rows = df.astype(str).values.tolist()
+        brokers = parse_et_brokers(cols, rows)
+        targets = None
+        if "目标价" in cols:
+            tg = [float(v) for v in df["目标价"] if v == v]
+            if tg:
+                st = sorted(tg)
+                m = len(st) // 2
+                targets = {
+                    "count": len(st),
+                    "median": round(st[m] if len(st) % 2 else (st[m - 1] + st[m]) / 2, 2),
+                    "mean": round(sum(st) / len(st), 2),
+                    "min": st[0],
+                    "max": st[-1],
+                }
+        return {"brokers": brokers, "targets": targets}
+
+    return call_with_timeout(_work, _ET_TIMEOUT_S, label=f"etnet[{symbol}]")
+
+
 def fetch_yf(symbol: str) -> dict:
     """拉 yfinance 港股一致预期。加硬超时——yfinance 爬 Yahoo，会被限流/改版卡住。"""
     import yfinance as yf
@@ -901,16 +972,36 @@ def main() -> int:
                     "quote_currency": yf_data.get("quote_currency"),
                 }
                 record["cross_check_summary"] = cross_check_summary(record["cross_check"])
+
+                # 经济通逐家明细：港股唯一能做的验证层（同源多机构对比）。
+                # 拿不到不该让整只失败——主源数据仍有效，只是少了逐家统计。
+                try:
+                    et = fetch_et(symbol)
+                    record["broker_stats"] = robust_stats(et["brokers"])
+                    record["broker_source"] = "etnet"
+                    # 目标价只展示、不参与任何判定（复合量，且与 yfinance 券商池重叠）
+                    record["target_price_display_only"] = {
+                        "etnet": et.get("targets"),
+                        "yfinance": (record.get("ratings") or {}).get("target_median"),
+                    }
+                except Exception as e:
+                    print(f"WARN: [{symbol}] 经济通逐家明细不可用（{type(e).__name__}: {e}）",
+                          file=sys.stderr)
+                    record["broker_stats"] = {}
+                    record["broker_source"] = None
+
                 if not args.dry_run:
                     write_and_deploy(stock["snapshot_key"], record)
                 flagged = significant_changes(record["deltas_vs_registry"], args.threshold)
                 flagged_all.extend((name, d) for d in flagged)
+                bs0 = (record.get("broker_stats") or {}).get(next(iter(est), ""), {})
                 e0 = next(iter(est.values()), {})
                 print(
                     f"  [{symbol}] ✓ {name}（港股/yfinance）"
                     f"  {next(iter(est), '—')} 营收{_fmt_yi(e0.get('revenue_yuan'))}"
                     f"  机构{e0.get('revenue_orgs') or '—'}家"
                     f"  币种{yf_data.get('financial_currency')}"
+                    f"  逐家{bs0.get('count') or '—'}家(经济通)"
                     f"{'  ⚠' + str(len(flagged)) + '项显著变动' if flagged else ''}"
                 )
             except Exception as e:
