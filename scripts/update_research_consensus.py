@@ -341,6 +341,164 @@ def broker_stats(per_year: dict[str, list[float]],
     return out
 
 
+# ── 稳健统计：新鲜度加权 + MAD 离群标记 ────────────────────────────────────────
+#
+# 分析师预测不满足正态假设：每个人锚定同一份公司指引、看得到彼此的数、且职业风险
+# 不对称（跟随共识错了没事，独立错了要走人）→ 实际形态是「紧密聚类 + 少数离群」。
+# 拟合正态会把 herding 造成的假紧密当成高置信度，同时给离群值不该有的权重。
+# 故不拟合分布，只用不依赖分布假设的稳健量。
+
+# 半衰期：一个季度。周期股尤其如此——四个月前的预测早已被新数据推翻。
+RECENCY_HALF_LIFE_DAYS = 90
+# 日期缺失时的权重。不是 0（缺日期≠数据无效），也不是 1（不该白拿满权重）。
+UNKNOWN_AGE_WEIGHT = 0.5
+# 离群门槛：|x − median| > k × MAD。用原始 MAD，不做 1.4826 正态化缩放——
+# 那个系数的意义正是「等价于正态下的 σ」，而我们恰恰不假设正态。
+MAD_OUTLIER_K = 3.0
+# 经济门槛：偏离中位数须达到该百分比才算离群。首跑实测（2026-08-04）发现单用 MAD 会
+# 误标——MAD 衡量的是相对**该标的自身共识紧密度**的异常，共识越紧、同样绝对偏离的
+# MAD 倍数越大。茅台 46 家高度一致，3.3×MAD 只对应 −5% 偏离也被标；而寒武纪
+# 7×MAD 对应 +43%。统计上异常 ≠ 经济上重要，故设双门槛。
+MIN_DEVIATION_PCT = 20.0
+
+
+def estimate_age_days(published: str | None, today) -> int | None:
+    """发布日期 → 距今天数。无法解析返回 None（区别于 0）。"""
+    if not published:
+        return None
+    try:
+        d = datetime.strptime(str(published)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (today - d).days
+
+
+def recency_weight(age_days: int | None, half_life_days: int = RECENCY_HALF_LIFE_DAYS) -> float:
+    """指数衰减权重。半衰期默认 90 天（一个季度）。"""
+    if age_days is None:
+        return UNKNOWN_AGE_WEIGHT
+    return 0.5 ** (max(age_days, 0) / half_life_days)
+
+
+def median_abs_deviation(values: list[float]) -> float:
+    """MAD = median(|x − median|)。不做正态化缩放，理由见本节顶部注释。"""
+    vals = sorted(values)
+    n = len(vals)
+    mid = n // 2
+    med = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+    devs = sorted(abs(v - med) for v in vals)
+    m = len(devs) // 2
+    return devs[m] if len(devs) % 2 else (devs[m - 1] + devs[m]) / 2
+
+
+def flag_outliers(values: list[float], k: float = MAD_OUTLIER_K,
+                  min_deviation_pct: float = MIN_DEVIATION_PCT) -> list[bool]:
+    """逐点标记是否离群。**标记而不删除** —— 离群者可能是唯一看对的人。
+
+    **双门槛**：既要统计上异常（|x−median| > k×MAD），又要经济上重要
+    （偏离中位数 ≥ min_deviation_pct）。只用前者会在共识紧密的标的上大量误标
+    （茅台 3.3×MAD 仅对应 −5%），只用后者会在本就分歧大的标的上大量误标。
+
+    n<3 时中位数与 MAD 都没有意义，一律不标。MAD==0 时不能除零，也一律不标。
+    """
+    n = len(values)
+    if n < 3:
+        return [False] * n
+    mad = median_abs_deviation(values)
+    if mad <= 0:
+        return [False] * n
+    vals = sorted(values)
+    mid = n // 2
+    med = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+    if med == 0:
+        return [False] * n
+    return [
+        abs(v - med) > k * mad and abs(v / med - 1) * 100 >= min_deviation_pct
+        for v in values
+    ]
+
+
+def parse_em_broker_records(ycmx: list[dict] | None) -> dict[str, list[dict]]:
+    """`ycmx` → `{'2026E': [{'org','published','value'}]}`，保留机构名与发布日期。
+
+    年份轴按 `YEAR_MARK` 动态映射（跨年与不同标的位次会变）。
+    """
+    out: dict[str, list[dict]] = {}
+    for row in ycmx or []:
+        org = row.get("ORG_NAME_ABBR")
+        pub = (row.get("PUBLISH_DATE") or "")[:10]
+        for i in (1, 2, 3, 4):
+            if str(row.get(f"YEAR_MARK{i}")) != "E":
+                continue
+            year, value = row.get(f"YEAR{i}"), row.get(f"PARENT_NETPROFIT{i}")
+            if year is None or value is None:
+                continue
+            out.setdefault(f"{year}E", []).append(
+                {"org": org, "published": pub, "value": float(value)}
+            )
+    return out
+
+
+def robust_stats(per_year: dict[str, list[dict]], today=None,
+                 half_life_days: int = RECENCY_HALF_LIFE_DAYS,
+                 k: float = MAD_OUTLIER_K,
+                 min_samples: int = MIN_MEDIAN_SAMPLES) -> dict[str, dict]:
+    """逐家预测记录 → 稳健统计量。
+
+    在既有 median/mean/min/max 之上增加：
+    - `weighted_mean`：按发布日期指数衰减加权（旭创最老一份已 124 天，不该等权）
+    - `outliers`：MAD 标记出的离群机构（含名字与偏离倍数，便于人工判断）
+    - `oldest_age_days` / `newest_age_days`：这组预期整体还新不新
+    """
+    today = today or datetime.now(BJT).date()
+    out: dict[str, dict] = {}
+    for year, records in sorted((per_year or {}).items()):
+        recs = [r for r in records if r.get("value") is not None]
+        if not recs:
+            continue
+        values = [r["value"] for r in recs]
+        ages = [estimate_age_days(r.get("published"), today) for r in recs]
+        weights = [recency_weight(a, half_life_days) for a in ages]
+        wsum = sum(weights)
+
+        n = len(values)
+        enough = n >= min_samples
+        svals = sorted(values)
+        mid = n // 2
+        median = (svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2) if enough else None
+
+        flags = flag_outliers(values, k)
+        mad = median_abs_deviation(values) if n >= 3 else 0.0
+        med_for_dev = svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2
+        outliers = [
+            {
+                "org": recs[i].get("org"),
+                "published": recs[i].get("published"),
+                "value": _round_yuan(values[i]),
+                "mad_multiple": round(abs(values[i] - med_for_dev) / mad, 1) if mad > 0 else None,
+                "deviation_pct": round((values[i] / med_for_dev - 1) * 100, 1) if med_for_dev else None,
+            }
+            for i, is_out in enumerate(flags) if is_out
+        ]
+        known_ages = [a for a in ages if a is not None]
+
+        out[year] = {
+            "median": _round_yuan(median),
+            "mean": _round_yuan(sum(values) / n),
+            "weighted_mean": _round_yuan(
+                sum(v * w for v, w in zip(values, weights)) / wsum) if wsum > 0 else None,
+            "min": _round_yuan(svals[0]),
+            "max": _round_yuan(svals[-1]),
+            "count": n,
+            "insufficient_samples": not enough,
+            "mad": _round_yuan(mad) if n >= 3 else None,
+            "outliers": outliers,
+            "oldest_age_days": max(known_ages) if known_ages else None,
+            "newest_age_days": min(known_ages) if known_ages else None,
+        }
+    return out
+
+
 # ── 背离告警邮件 ───────────────────────────────────────────────────────────────
 
 _ENV_FILE = pathlib.Path.home() / ".stock-monitor.env"
@@ -433,7 +591,7 @@ def fetch_em(symbol: str, exchange: str) -> dict:
         "estimates": parse_em_estimates(d.get("yctj_list")),
         "ratings": parse_em_ratings(d.get("pjtj")),
         "brokers": parse_em_brokers(ycmx),
-        "broker_stats": broker_stats(parse_em_broker_estimates(ycmx)),
+        "broker_stats": robust_stats(parse_em_broker_records(ycmx)),
     }
 
 
