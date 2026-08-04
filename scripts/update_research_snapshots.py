@@ -330,6 +330,48 @@ def compute_technicals(rows: list, symbol: str = "") -> dict:
     }
 
 
+# ── 币种换算（港股）────────────────────────────────────────────────────────────
+#
+# 智谱 02513.HK 的市值报价是 HKD，而机构一致预期的营收/净利是 CNY
+# （yfinance: currency=HKD, financialCurrency=CNY）。直接相除 → PS 系统性偏高约 16%
+# （HKDCNY 实测 0.8604）。A 股报价与财务同为 CNY，不触发换算。
+
+_QUOTE_CCY = {"SH": "CNY", "SZ": "CNY", "HK": "HKD"}
+_FX_TICKER = {("HKD", "CNY"): "HKDCNY=X"}
+
+
+def quote_currency(exchange: str) -> str:
+    """交易所 → 报价币种。"""
+    return _QUOTE_CCY.get(exchange, "CNY")
+
+
+def convert_market_cap(cap: float, from_ccy: str, to_ccy: str, fx_rate: float | None) -> float:
+    """把市值换算到一致预期所用的币种。
+
+    币种相同则原样返回（不做乘 1.0，避免浮点漂移）。
+    **拿不到汇率时抛错而不是跳过换算** —— 静默跳过会产出偏高 16% 的 PS 且无人察觉，
+    这正是本函数存在的原因。
+    """
+    if from_ccy == to_ccy:
+        return cap
+    if not fx_rate or fx_rate <= 0:
+        raise ValueError(f"缺少有效汇率 {from_ccy}->{to_ccy}（得到 {fx_rate!r}），拒绝跳过换算")
+    return cap * fx_rate
+
+
+def fetch_fx_rate(from_ccy: str, to_ccy: str) -> float:
+    """取即期汇率（yfinance）。仅在港股路径被调用。"""
+    ticker = _FX_TICKER.get((from_ccy, to_ccy))
+    if not ticker:
+        raise ValueError(f"未配置汇率代码 {from_ccy}->{to_ccy}")
+    import yfinance as yf
+
+    hist = yf.Ticker(ticker).history(period="5d")
+    if hist is None or hist.empty:
+        raise ValueError(f"{ticker} 无汇率数据")
+    return float(hist["Close"].iloc[-1])
+
+
 def format_return_summary(snapshot: dict) -> str:
     """控制台摘要里的涨幅串。
 
@@ -365,14 +407,24 @@ def build_snapshot(stock: dict) -> dict:
     market_cap_yi = round(market_cap_yuan / 1e8)  # 转换为亿
     as_of = datetime.now(BJT).strftime("%Y-%m-%d")
 
+    # 估值分母的币种：注册表显式声明；未声明则视同报价币种（A 股即 CNY）
+    q_ccy = quote_currency(exchange)
+    c_ccy = stock.get("consensus_currency", q_ccy)
+    fx_rate = None
+    if c_ccy != q_ccy:
+        fx_rate = fetch_fx_rate(q_ccy, c_ccy)
+        print(f"  [{symbol}] 汇率 {q_ccy}->{c_ccy} = {fx_rate:.4f}", flush=True)
+    # 仅用于估值分母对齐；展示用的 market_cap_yi 仍保持报价币种
+    valuation_cap = convert_market_cap(market_cap_yuan, q_ccy, c_ccy, fx_rate)
+
     valuation_mode = stock.get("valuation_mode", "pe")
     pe_estimates: dict[str, float] = {}
     ps_estimates: dict[str, float] = {}
     for label, entry in consensus.items():
         if valuation_mode in ("ps", "both") and "revenue_yuan" in entry:
-            ps_estimates[label] = round(market_cap_yuan / entry["revenue_yuan"], 1)
+            ps_estimates[label] = round(valuation_cap / entry["revenue_yuan"], 1)
         if valuation_mode in ("pe", "both") and "profit_yuan" in entry:
-            pe_estimates[label] = round(market_cap_yuan / entry["profit_yuan"], 1)
+            pe_estimates[label] = round(valuation_cap / entry["profit_yuan"], 1)
 
     snapshot = {
         "symbol": symbol,
@@ -388,6 +440,10 @@ def build_snapshot(stock: dict) -> dict:
         "history_days": ohlcv.get("history_days"),
         "pe_estimates": pe_estimates,
         "ps_estimates": ps_estimates,
+        # 汇率与币种落盘，否则事后无法复算 PS/PE 是怎么来的
+        "quote_currency": q_ccy,
+        "consensus_currency": c_ccy,
+        "fx_rate": round(fx_rate, 6) if fx_rate else None,
         "technical": {
             "ma20": ohlcv["ma20"],
             "ma20_slope": ohlcv["ma20_slope"],
