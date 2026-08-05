@@ -201,14 +201,17 @@ def test_robust_stats_records_deviation_pct_for_review():
 # 故不再让下游自己去猜该用哪个统计量——直接落盘 `preferred_stat` / `preferred_value`。
 
 
-def test_preferred_stat_is_median_when_coverage_is_thick():
+def test_preferred_stat_is_trimmed_mean_when_coverage_is_thick():
+    """2026-08-05 起采用口径由中位数改为截尾均值（用户选定）。
+    中位数仍照常计算并落盘，只是不再是 preferred。"""
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
             for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])]
 
     out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
 
-    assert out["preferred_stat"] == "median"
-    assert out["preferred_value"] == out["median"]
+    assert out["preferred_stat"] == "trimmed_mean"
+    assert out["preferred_value"] == out["trimmed_mean"]
+    assert out["median"] == pytest.approx(105.0), "中位数仍应正确计算"
 
 
 def test_preferred_stat_falls_back_to_simple_mean_when_thin():
@@ -249,3 +252,79 @@ def test_thick_coverage_reason_is_robust():
     out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
 
     assert out["preferred_reason"] == "robust"
+
+
+# ── 截尾均值（用户选定的估值分母口径）────────────────────────────────────────
+#
+# 用户判断：算买点价位时用「剔除极值后的平均值」比纯均值或中位数都合理——
+# 保留大部分样本信息，同时不被个别离谱预测带偏。
+#
+# 规则：n≥5 时两端各剔除 max(1, floor(n×10%)) 个；n<5 已属薄覆盖，不截尾（直接均值）。
+
+
+def test_trimmed_mean_drops_both_extremes():
+    """10 个样本剔除两端各 1 个 → 只有中间 8 个参与平均。"""
+    values = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 1000.0]
+
+    # 剔除 10 与 1000 后，剩 20..90 的均值 = 55
+    assert urc.trimmed_mean(values, trim_pct=10.0) == pytest.approx(55.0)
+
+
+def test_trimmed_mean_resists_a_single_wild_forecast():
+    """一个离谱高值不该把买点抬上去 —— 这正是不用纯均值的理由。"""
+    values = [100.0, 102.0, 104.0, 106.0, 108.0, 500.0]
+
+    plain = sum(values) / len(values)
+    trimmed = urc.trimmed_mean(values, trim_pct=10.0)
+
+    assert plain > 160
+    assert trimmed == pytest.approx(105.0)
+
+
+def test_trimmed_mean_scales_trim_count_with_sample_size():
+    """20 个样本按 10% 两端各剔 2 个。"""
+    values = [1.0, 2.0] + [10.0] * 16 + [1000.0, 2000.0]
+
+    assert urc.trimmed_mean(values, trim_pct=10.0) == pytest.approx(10.0)
+
+
+def test_trimmed_mean_falls_back_to_plain_mean_when_thin():
+    """n<5 已是薄覆盖，再截尾会只剩一两个点。"""
+    values = [10.0, 20.0, 90.0]
+
+    assert urc.trimmed_mean(values, trim_pct=10.0) == pytest.approx(40.0)
+
+
+def test_trimmed_mean_handles_empty():
+    assert urc.trimmed_mean([], trim_pct=10.0) is None
+
+
+def test_robust_stats_exposes_trimmed_mean():
+    recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
+            for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 500.0])]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["trimmed_mean"] == pytest.approx(105.0)
+
+
+def test_preferred_stat_uses_trimmed_mean_when_coverage_is_thick():
+    """★口径切换：覆盖足够时估值分母采用截尾均值（原为中位数）。"""
+    recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
+            for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 500.0])]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_stat"] == "trimmed_mean"
+    assert out["preferred_value"] == pytest.approx(105.0)
+
+
+def test_thin_coverage_still_uses_simple_mean():
+    """薄覆盖仍走简单算术平均，不因本次改动而变。"""
+    recs = [{"org": "A", "published": "2026-07-01", "value": 100.0},
+            {"org": "B", "published": "2026-01-01", "value": 200.0}]
+
+    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+
+    assert out["preferred_stat"] == "mean"
+    assert out["preferred_value"] == 150.0

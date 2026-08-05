@@ -613,6 +613,27 @@ def recency_weight(age_days: int | None, half_life_days: int = RECENCY_HALF_LIFE
     return 0.5 ** (max(age_days, 0) / half_life_days)
 
 
+TRIM_PCT = 10.0
+
+
+def trimmed_mean(values: list[float], trim_pct: float = TRIM_PCT) -> float | None:
+    """剔除两端极值后的平均值 —— 估值分母的采用口径（2026-08-05 用户选定）。
+
+    比纯均值抗离群（一个离谱预测不该把买点抬上去），
+    又比中位数保留更多样本信息。
+    n≥5 时两端各剔 `max(1, floor(n×trim_pct%))` 个；n<5 已属薄覆盖，不截尾。
+    """
+    vals = sorted(v for v in (values or []) if v is not None)
+    n = len(vals)
+    if not n:
+        return None
+    if n < 5:
+        return sum(vals) / n
+    k = max(1, int(n * trim_pct / 100))
+    kept = vals[k:n - k] or vals
+    return sum(kept) / len(kept)
+
+
 def median_abs_deviation(values: list[float]) -> float:
     """MAD = median(|x − median|)。不做正态化缩放，理由见本节顶部注释。"""
     vals = sorted(values)
@@ -703,8 +724,9 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
         # 薄覆盖时显式回退到简单算术平均：2-3 家覆盖下中位数/加权/离群检测全无意义，
         # 与其让下游猜该用哪个统计量，不如直接把结论和理由一起落盘。
         simple_mean = sum(values) / n
+        trimmed = trimmed_mean(values)
         if enough:
-            preferred_stat, preferred_value, preferred_reason = "median", median, "robust"
+            preferred_stat, preferred_value, preferred_reason = "trimmed_mean", trimmed, "robust"
         else:
             preferred_stat, preferred_value, preferred_reason = "mean", simple_mean, "thin_coverage"
 
@@ -729,6 +751,7 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
             "preferred_reason": preferred_reason,
             "median": _round_yuan(median),
             "mean": _round_yuan(simple_mean),
+            "trimmed_mean": _round_yuan(trimmed),
             "weighted_mean": _round_yuan(
                 sum(v * w for v, w in zip(values, weights)) / wsum) if wsum > 0 else None,
             "min": _round_yuan(svals[0]),

@@ -101,7 +101,8 @@ def test_et_brokers_feed_robust_stats_median():
 
     assert stats["median"] == pytest.approx(-4_312_000_000.0)
     assert stats["count"] == 13
-    assert stats["preferred_stat"] == "median"
+    # 采用口径 2026-08-05 起为截尾均值；中位数仍是校验解析正确性的锚
+    assert stats["preferred_stat"] == "trimmed_mean"
 
 
 def test_et_brokers_recency_weighting_applies():
