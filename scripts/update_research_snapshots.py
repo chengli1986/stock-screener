@@ -255,7 +255,7 @@ def _spans_full_year(rows: list) -> bool:
     return (last - first).days >= _FULL_YEAR_SPAN_DAYS
 
 
-def compute_technicals(rows: list, symbol: str = "") -> dict:
+def compute_technicals(rows: list, symbol: str = "", today=None) -> dict:
     """腾讯 K 线行 → 技术指标。行格式 [date, open, close, high, low, volume, amount, ...]。
 
     **历史长度守卫**:每个指标只在数据真的够的时候才给值，不够就是 None。
@@ -316,6 +316,21 @@ def compute_technicals(rows: list, symbol: str = "") -> dict:
     week52_high = round(max(highs), 2) if highs else None
     week52_low  = round(min(lows), 2) if lows else None
 
+    # 高点日期与时效：**脱离时间的回撤没有意义** —— 两周跌 33% 与 11 个月阴跌 33%
+    # 是两回事。买点逻辑靠这两个字段区分「近期急跌」与「长期阴跌」。
+    high_date = None
+    if highs:
+        peak = max(range(len(highs)), key=lambda i: highs[i])
+        try:
+            high_date = str(rows[peak][0])[:10]
+            datetime.strptime(high_date, "%Y-%m-%d")
+        except (ValueError, IndexError, TypeError):
+            high_date = None
+    high_age = None
+    if high_date:
+        ref = today or datetime.now(BJT).date()
+        high_age = (ref - datetime.strptime(high_date, "%Y-%m-%d").date()).days
+
     return {
         "year_return_pct": year_return_pct,
         "period_return_pct": period_return_pct,
@@ -327,6 +342,8 @@ def compute_technicals(rows: list, symbol: str = "") -> dict:
         "week52_high": week52_high,
         "week52_low": week52_low,
         "week52_is_full": week52_is_full,
+        "week52_high_date": high_date,
+        "week52_high_age_days": high_age,
     }
 
 
@@ -527,6 +544,8 @@ def build_snapshot(stock: dict) -> dict:
             "week52_high": ohlcv["week52_high"],
             "week52_low": ohlcv["week52_low"],
             "week52_is_full": ohlcv.get("week52_is_full"),
+            "week52_high_date": ohlcv.get("week52_high_date"),
+            "week52_high_age_days": ohlcv.get("week52_high_age_days"),
         },
         "updated_at": datetime.now(BJT).isoformat(),
     }

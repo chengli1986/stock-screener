@@ -213,3 +213,74 @@ def test_return_summary_falls_back_to_listing_period():
 
 def test_return_summary_handles_missing_everything():
     assert urs.format_return_summary({"year_return_pct": None}) == "涨幅—"
+
+
+# ── 52 周高点的日期与时效 ────────────────────────────────────────────────────
+#
+# 用户指出：**脱离时间的回撤没有意义** —— 两周内跌 33% 与 11 个月阴跌 33% 是两回事，
+# 而原实现只存 `week52_high` 数值、不存日期，买点逻辑无从区分。
+#
+# 实测印证：观察池 7 只 AI 链标的的高点全部落在 2026-06-22~07-01 这 9 天内
+# （同一次板块见顶），而宁德 90 天前、茅台 180 天前 —— 节奏完全不同。
+
+
+def test_records_week52_high_date():
+    rows = _rows(241, span_days=365)  # 单调上涨，最高价在最后一根
+
+    tech = urs.compute_technicals(rows)
+
+    assert tech["week52_high_date"] == rows[-1][0]
+
+
+def test_high_date_points_at_the_actual_peak():
+    rows = _rows(241, span_days=365)
+    rows[100][3] = "9999.00"          # 把第 101 根的最高价拉成全局峰值
+
+    tech = urs.compute_technicals(rows)
+
+    assert tech["week52_high_date"] == rows[100][0]
+    assert tech["week52_high"] == pytest.approx(9999.0)
+
+
+def test_high_age_days_measured_from_today():
+    from datetime import date
+    rows = _rows(241, span_days=365)
+    rows[100][3] = "9999.00"
+
+    tech = urs.compute_technicals(rows, today=date(2026, 8, 5))
+
+    from datetime import datetime
+    peak = datetime.strptime(rows[100][0], "%Y-%m-%d").date()
+    assert tech["week52_high_age_days"] == (date(2026, 8, 5) - peak).days
+
+
+def test_high_age_is_none_when_dates_unparseable():
+    rows = [["bad-date", "1", "2", "3", "0.5", "100", "1000"] for _ in range(5)]
+
+    tech = urs.compute_technicals(rows)
+
+    assert tech["week52_high_date"] is None
+    assert tech["week52_high_age_days"] is None
+
+
+def test_snapshot_carries_high_date(tmp_path):
+    """买点逻辑读的是快照，字段必须真的落进 JSON。"""
+    import unittest.mock as mock
+    ohlcv = {
+        "year_return_pct": 335.7, "period_return_pct": 335.7, "history_days": 241,
+        "ma20": 1060.0, "ma20_slope": "down", "vol_60d_ann_pct": 84.0,
+        "vol_ratio_5_60": 1.3, "week52_high": 1416.88, "week52_low": 195.8,
+        "week52_is_full": True, "week52_high_date": "2026-06-22", "week52_high_age_days": 44,
+    }
+    quote = {"price_yuan": 945.0, "market_cap_yuan": 1.1e12,
+             "change_pct": -1.0, "vol_wan_shou": 50.0}
+    stock = {"symbol": "300308", "exchange": "SZ", "name": "中际旭创",
+             "snapshot_key": "300308", "valuation_mode": "pe",
+             "consensus": {"2026E": {"profit_yuan": 3e10}}}
+    with mock.patch.object(urs, "fetch_quote_data", return_value=quote), \
+         mock.patch.object(urs, "fetch_ohlcv_data", return_value=ohlcv), \
+         mock.patch.object(urs, "DATA_DIR", tmp_path):
+        snap = urs.build_snapshot(stock)
+
+    assert snap["technical"]["week52_high_date"] == "2026-06-22"
+    assert snap["technical"]["week52_high_age_days"] == 44
