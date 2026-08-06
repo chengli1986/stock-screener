@@ -66,7 +66,61 @@ def fetch_quote(tencent_code: str) -> dict:
     }
 
 
+_YF_SUFFIX = {"jp": ".T", "kr": ".KS"}
+_YF_TIMEOUT_S = 30
+
+
+def yf_ticker_of(tencent_code: str) -> str | None:
+    """海外股 → yfinance ticker；A 股/港股返回 None（腾讯供数充足，不必换源）。
+
+    ★腾讯 fqkline 对海外股只返回 1–2 根 K 线（2026-08-06 实测：usAVGO 2 根、
+    jp6503 1 根、kr005930 1 根；A 股/港股 261 根），所以年涨幅必须换源。
+    """
+    code = str(tencent_code)
+    prefix, body = code[:2].lower(), code[2:]
+    if prefix == "us":
+        return body
+    if prefix in _YF_SUFFIX:
+        return body + _YF_SUFFIX[prefix]
+    return None
+
+
+def _yf_year_return(ticker: str) -> float | None:
+    """yfinance 近一年涨幅%（带硬超时——其内部 requests 无 timeout）。"""
+    import threading
+
+    box: dict = {}
+
+    def _work():
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(ticker).history(period="1y")
+            if len(hist) >= 60:
+                first, last = float(hist["Close"].iloc[0]), float(hist["Close"].iloc[-1])
+                if first > 0:
+                    box["v"] = round((last / first - 1) * 100, 1)
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN: [{ticker}] yfinance year_return failed: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(_YF_TIMEOUT_S)
+    if t.is_alive():
+        print(f"WARN: [{ticker}] yfinance year_return 超时 >{_YF_TIMEOUT_S}s", file=sys.stderr)
+    return box.get("v")
+
+
 def fetch_year_return(tencent_code: str) -> float | None:
+    """1 年涨幅%：A 股/港股走腾讯，海外股腾讯不供数时回落 yfinance。"""
+    got = _tencent_year_return(tencent_code)
+    if got is not None:
+        return got
+    ticker = yf_ticker_of(tencent_code)
+    return _yf_year_return(ticker) if ticker else None
+
+
+def _tencent_year_return(tencent_code: str) -> float | None:
     """腾讯 K 线 → 近 252 交易日 1 年涨幅%。数据不足返回 None。"""
     end_dt = datetime.now(BJT)
     start_dt = end_dt - timedelta(days=400)
@@ -88,31 +142,118 @@ def fetch_year_return(tencent_code: str) -> float | None:
     return round((window[-1] / window[0] - 1) * 100, 1)
 
 
-def build_peers(code: str, cfg: dict) -> dict:
+# ── 跨市场币种换算 ─────────────────────────────────────────────────────────────
+#
+# 腾讯 qt 的 [45] 字段是**本币计价的「亿」**：茅台 16,358 亿人民币、Broadcom
+# 19,900 亿美元、三星 15,135,928 亿韩元、三菱 119,552 亿日元。直接并列比较是错的。
+# （2026-08-06 实测：美股/港股/A股/韩股/日股均有数据，**台股 tw2330 无数据**。）
+#
+# 统一换算到 CNY —— 观察池以 A 股为主，读者的锚点是人民币。
+
+_PREFIX_CCY = {"sh": "CNY", "sz": "CNY", "hk": "HKD", "us": "USD",
+               "jp": "JPY", "kr": "KRW"}
+_FX_PAIRS = {"USD": "USDCNY=X", "HKD": "HKDCNY=X",
+             "JPY": "JPYCNY=X", "KRW": "KRWCNY=X"}
+_FX_TIMEOUT_S = 30
+
+
+def currency_of(tencent_code: str) -> str | None:
+    """从腾讯代码前缀推币种；未知前缀返回 None（**不默认按人民币**）。"""
+    return _PREFIX_CCY.get(str(tencent_code)[:2].lower())
+
+
+def convert_cap(cap_native: float | None, currency: str, fx: dict) -> float | None:
+    """本币「亿」→ 人民币「亿」。
+
+    ★缺汇率时**抛错而不是原样返回** —— 原样返回正是把 19,900 亿美元
+    印成 19,900 亿人民币的那条路径（与 8-04 港股 PS 换算的处置口径一致）。
+    """
+    if cap_native is None:
+        return None
+    if currency == "CNY":
+        return cap_native
+    rate = fx.get(currency)
+    if not rate:
+        raise ValueError(f"缺少 {currency}→CNY 汇率，拒绝按 1:1 处理")
+    return round(cap_native * rate)   # 亿元级，小数无意义（原始值另存 native）
+
+
+def fetch_fx_rates(currencies: set[str]) -> dict:
+    """取各币种对 CNY 汇率（yfinance，带硬超时——它内部 requests 无 timeout）。"""
+    import threading
+
+    need = {c for c in currencies if c != "CNY" and c in _FX_PAIRS}
+    out: dict[str, float] = {}
+    if not need:
+        return out
+
+    def _work():
+        import yfinance as yf
+        for ccy in need:
+            try:
+                hist = yf.Ticker(_FX_PAIRS[ccy]).history(period="5d")
+                if not hist.empty:
+                    out[ccy] = float(hist["Close"].iloc[-1])
+            except Exception as e:  # noqa: BLE001
+                print(f"WARN: {ccy} 汇率抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(_FX_TIMEOUT_S)
+    if t.is_alive():
+        print(f"WARN: 汇率抓取超时 >{_FX_TIMEOUT_S}s", file=sys.stderr)
+    for ccy, rate in out.items():
+        print(f"  汇率 {ccy}→CNY = {rate:.6f}")
+    return out
+
+
+def build_peer_record(p: dict, price, cap_native, year_return_pct, fx: dict) -> dict:
+    """组装单个 peer。换算后同时保留原币值与所用汇率，页面才能说清这是换算值。"""
+    ccy = p.get("currency") or currency_of(p["tencent"]) or "CNY"
+    rec = {
+        "code": p["code"], "name": p["name"], "market": p["market"],
+        "currency": ccy, "price": price,
+        "market_cap_yi_native": cap_native,
+        "market_cap_yi": None,
+        "fx_to_cny": 1.0 if ccy == "CNY" else None,
+        "year_return_pct": year_return_pct,
+    }
+    try:
+        rec["market_cap_yi"] = convert_cap(cap_native, ccy, fx)
+        if ccy != "CNY":
+            rec["fx_to_cny"] = fx.get(ccy)
+    except ValueError as e:
+        rec["note"] = str(e)
+    return rec
+
+
+def build_peers(code: str, cfg: dict, fx: dict) -> dict:
     out_peers = []
     ok = 0
     for p in cfg["peers"]:
         tc = p["tencent"]
-        rec = {"code": p["code"], "name": p["name"], "market": p["market"],
-               "currency": p["currency"], "price": None,
-               "market_cap_yi": None, "year_return_pct": None}
+        price = cap_native = yr = None
         try:
             q = fetch_quote(tc)
-            rec["price"] = q["price"]
-            rec["market_cap_yi"] = q["market_cap_yi"]
+            price, cap_native = q["price"], q["market_cap_yi"]
             try:
-                rec["year_return_pct"] = fetch_year_return(tc)
+                yr = fetch_year_return(tc)
             except Exception as e:  # noqa: BLE001
                 print(f"WARN: [{p['name']}] year_return failed: {e}", file=sys.stderr)
             ok += 1
-            print(f"  [{p['name']:8s}] {p['currency']} {rec['price']}  "
-                  f"市值 {rec['market_cap_yi']} 亿  1年 {rec['year_return_pct']}%")
         except Exception as e:  # noqa: BLE001
             print(f"WARN: [{p['name']}] quote failed, 保留静态值: {e}", file=sys.stderr)
+        rec = build_peer_record(p, price, cap_native, yr, fx)
+        if price is not None:
+            conv = "" if rec["currency"] == "CNY" else f" → ¥{rec['market_cap_yi']} 亿" \
+                if rec["market_cap_yi"] is not None else " → 换算失败"
+            print(f"  [{p['name']:8s}] {rec['currency']} {price}  "
+                  f"市值 {cap_native} 亿{conv}  1年 {yr}%")
         out_peers.append(rec)
     return {
         "as_of": datetime.now(BJT).strftime("%Y-%m-%d"),
         "table_label": cfg.get("table_label", ""),
+        "cap_unit": "亿元人民币（非人民币标的按当日汇率换算，原值见 market_cap_yi_native）",
         "peers": out_peers,
         "_ok": ok,
     }
@@ -133,13 +274,18 @@ def write_and_deploy(code: str, payload: dict) -> None:
 
 def main() -> int:
     cfg_all = json.loads(CONFIG.read_text())
+    wanted = {p.get("currency") or currency_of(p["tencent"])
+              for code, cfg in cfg_all.items() if not code.startswith("_")
+              for p in cfg["peers"]}
+    fx = fetch_fx_rates({c for c in wanted if c})
+
     failures = []
     for code, cfg in cfg_all.items():
         if code.startswith("_"):
             continue
         print(f"[{code}] fetching {len(cfg['peers'])} peers...")
         try:
-            payload = build_peers(code, cfg)
+            payload = build_peers(code, cfg, fx)
             write_and_deploy(code, payload)
         except Exception as e:  # noqa: BLE001
             print(f"ERROR [{code}]: {e}", file=sys.stderr)

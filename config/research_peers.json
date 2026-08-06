@@ -1,32 +1,394 @@
 {
-  "_comment": "Per-report peer market-data registry for §6 同业横向对比 table hydration. Fetched via Tencent qt (price+market_cap) + Tencent K-line (1yr return). Currency CNY for A-share, HKD for HK.",
+  "_comment": "Per-report peer market-data registry for 同业市值表 hydration. Fetched via Tencent qt (price + market_cap) + Tencent K-line (1yr return). Tencent 的市值字段是**本币计价的亿**，脚本统一换算到 CNY 并保留 market_cap_yi_native + fx_to_cny。市场前缀：sh/sz=CNY, hk=HKD, us=USD, jp=JPY, kr=KRW。**台股无数据**（tw2330/tw2408 实测空）——台积电改走美股 ADR usTSM，南亚科技无 ADR 故不纳入。",
   "688256": {
     "table_label": "AI 加速芯片同业市值（自动刷新）",
     "peers": [
-      {"name": "海光信息", "code": "688041", "tencent": "sh688041", "market": "科创板", "currency": "CNY"},
-      {"name": "沐曦股份", "code": "688802", "tencent": "sh688802", "market": "科创板", "currency": "CNY"},
-      {"name": "摩尔线程", "code": "688795", "tencent": "sh688795", "market": "科创板", "currency": "CNY"},
-      {"name": "壁仞科技", "code": "06082", "tencent": "hk06082", "market": "港股主板", "currency": "HKD"}
+      {
+        "name": "海光信息",
+        "code": "688041",
+        "tencent": "sh688041",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "沐曦股份",
+        "code": "688802",
+        "tencent": "sh688802",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "摩尔线程",
+        "code": "688795",
+        "tencent": "sh688795",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "壁仞科技",
+        "code": "06082",
+        "tencent": "hk06082",
+        "market": "港股主板",
+        "currency": "HKD"
+      }
     ]
   },
   "300750": {
     "table_label": "动力电池+储能同业市值（自动刷新）",
     "peers": [
-      {"name": "比亚迪", "code": "002594", "tencent": "sz002594", "market": "深主板", "currency": "CNY"},
-      {"name": "亿纬锂能", "code": "300014", "tencent": "sz300014", "market": "创业板", "currency": "CNY"},
-      {"name": "国轩高科", "code": "002074", "tencent": "sz002074", "market": "深主板", "currency": "CNY"},
-      {"name": "欣旺达", "code": "300207", "tencent": "sz300207", "market": "创业板", "currency": "CNY"},
-      {"name": "中创新航", "code": "03931", "tencent": "hk03931", "market": "港股主板", "currency": "HKD"}
+      {
+        "name": "比亚迪",
+        "code": "002594",
+        "tencent": "sz002594",
+        "market": "深主板",
+        "currency": "CNY"
+      },
+      {
+        "name": "亿纬锂能",
+        "code": "300014",
+        "tencent": "sz300014",
+        "market": "创业板",
+        "currency": "CNY"
+      },
+      {
+        "name": "国轩高科",
+        "code": "002074",
+        "tencent": "sz002074",
+        "market": "深主板",
+        "currency": "CNY"
+      },
+      {
+        "name": "欣旺达",
+        "code": "300207",
+        "tencent": "sz300207",
+        "market": "创业板",
+        "currency": "CNY"
+      },
+      {
+        "name": "中创新航",
+        "code": "03931",
+        "tencent": "hk03931",
+        "market": "港股主板",
+        "currency": "HKD"
+      }
     ]
   },
   "02513": {
     "table_label": "港股 AI / 大模型同业市值（自动刷新）",
     "peers": [
-      {"name": "MiniMax", "code": "00100", "tencent": "hk00100", "market": "港股主板", "currency": "HKD"},
-      {"name": "商汤-W", "code": "00020", "tencent": "hk00020", "market": "港股主板", "currency": "HKD"},
-      {"name": "美图公司", "code": "01357", "tencent": "hk01357", "market": "港股主板", "currency": "HKD"},
-      {"name": "第四范式", "code": "06682", "tencent": "hk06682", "market": "港股主板", "currency": "HKD"},
-      {"name": "出门问问", "code": "02438", "tencent": "hk02438", "market": "港股主板", "currency": "HKD"}
+      {
+        "name": "MiniMax",
+        "code": "00100",
+        "tencent": "hk00100",
+        "market": "港股主板",
+        "currency": "HKD"
+      },
+      {
+        "name": "商汤-W",
+        "code": "00020",
+        "tencent": "hk00020",
+        "market": "港股主板",
+        "currency": "HKD"
+      },
+      {
+        "name": "美图公司",
+        "code": "01357",
+        "tencent": "hk01357",
+        "market": "港股主板",
+        "currency": "HKD"
+      },
+      {
+        "name": "第四范式",
+        "code": "06682",
+        "tencent": "hk06682",
+        "market": "港股主板",
+        "currency": "HKD"
+      },
+      {
+        "name": "出门问问",
+        "code": "02438",
+        "tencent": "hk02438",
+        "market": "港股主板",
+        "currency": "HKD"
+      }
+    ]
+  },
+  "300308": {
+    "table_label": "光模块同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "新易盛",
+        "code": "300502.SZ",
+        "tencent": "sz300502",
+        "market": "创业板",
+        "currency": "CNY"
+      },
+      {
+        "name": "天孚通信",
+        "code": "300394.SZ",
+        "tencent": "sz300394",
+        "market": "创业板",
+        "currency": "CNY"
+      },
+      {
+        "name": "光迅科技",
+        "code": "002281.SZ",
+        "tencent": "sz002281",
+        "market": "深主板",
+        "currency": "CNY"
+      },
+      {
+        "name": "Coherent",
+        "code": "COHR.US",
+        "tencent": "usCOHR",
+        "market": "美股",
+        "currency": "USD"
+      },
+      {
+        "name": "Lumentum",
+        "code": "LITE.US",
+        "tencent": "usLITE",
+        "market": "美股",
+        "currency": "USD"
+      },
+      {
+        "name": "Applied Optoelectronics",
+        "code": "AAOI.US",
+        "tencent": "usAAOI",
+        "market": "美股",
+        "currency": "USD"
+      }
+    ]
+  },
+  "688702": {
+    "table_label": "以太网交换芯片同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "裕太微-U",
+        "code": "688515.SH",
+        "tencent": "sh688515",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "Broadcom",
+        "code": "AVGO.US",
+        "tencent": "usAVGO",
+        "market": "美股",
+        "currency": "USD"
+      },
+      {
+        "name": "Marvell",
+        "code": "MRVL.US",
+        "tencent": "usMRVL",
+        "market": "美股",
+        "currency": "USD"
+      }
+    ]
+  },
+  "688498": {
+    "table_label": "光芯片同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "长光华芯",
+        "code": "688048.SH",
+        "tencent": "sh688048",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "Lumentum",
+        "code": "LITE.US",
+        "tencent": "usLITE",
+        "market": "美股",
+        "currency": "USD"
+      },
+      {
+        "name": "三菱电机",
+        "code": "6503.T",
+        "tencent": "jp6503",
+        "market": "东证",
+        "currency": "JPY"
+      }
+    ]
+  },
+  "688048": {
+    "table_label": "激光/光芯片同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "源杰科技",
+        "code": "688498.SH",
+        "tencent": "sh688498",
+        "market": "科创板",
+        "currency": "CNY"
+      },
+      {
+        "name": "Lumentum",
+        "code": "LITE.US",
+        "tencent": "usLITE",
+        "market": "美股",
+        "currency": "USD"
+      }
+    ]
+  },
+  "000636": {
+    "table_label": "全球 MLCC 同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "村田制作所",
+        "code": "6981.T",
+        "tencent": "jp6981",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "三星电机",
+        "code": "009150.KS",
+        "tencent": "kr009150",
+        "market": "韩交所",
+        "currency": "KRW"
+      },
+      {
+        "name": "太阳诱电",
+        "code": "6976.T",
+        "tencent": "jp6976",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "TDK",
+        "code": "6762.T",
+        "tencent": "jp6762",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "京瓷",
+        "code": "6971.T",
+        "tencent": "jp6971",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "三环集团",
+        "code": "300408.SZ",
+        "tencent": "sz300408",
+        "market": "创业板",
+        "currency": "CNY"
+      }
+    ]
+  },
+  "300408": {
+    "table_label": "全球被动元件同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "村田制作所",
+        "code": "6981.T",
+        "tencent": "jp6981",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "三星电机",
+        "code": "009150.KS",
+        "tencent": "kr009150",
+        "market": "韩交所",
+        "currency": "KRW"
+      },
+      {
+        "name": "太阳诱电",
+        "code": "6976.T",
+        "tencent": "jp6976",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "TDK",
+        "code": "6762.T",
+        "tencent": "jp6762",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "京瓷",
+        "code": "6971.T",
+        "tencent": "jp6971",
+        "market": "东证",
+        "currency": "JPY"
+      },
+      {
+        "name": "风华高科",
+        "code": "000636.SZ",
+        "tencent": "sz000636",
+        "market": "深主板",
+        "currency": "CNY"
+      }
+    ]
+  },
+  "600519": {
+    "table_label": "白酒同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "五粮液",
+        "code": "000858.SZ",
+        "tencent": "sz000858",
+        "market": "深主板",
+        "currency": "CNY"
+      },
+      {
+        "name": "泸州老窖",
+        "code": "000568.SZ",
+        "tencent": "sz000568",
+        "market": "深主板",
+        "currency": "CNY"
+      },
+      {
+        "name": "山西汾酒",
+        "code": "600809.SH",
+        "tencent": "sh600809",
+        "market": "沪主板",
+        "currency": "CNY"
+      }
+    ]
+  },
+  "688825": {
+    "table_label": "全球存储/晶圆同业市值（自动刷新）",
+    "peers": [
+      {
+        "name": "三星电子",
+        "code": "005930.KS",
+        "tencent": "kr005930",
+        "market": "韩交所",
+        "currency": "KRW"
+      },
+      {
+        "name": "SK 海力士",
+        "code": "000660.KS",
+        "tencent": "kr000660",
+        "market": "韩交所",
+        "currency": "KRW"
+      },
+      {
+        "name": "美光科技",
+        "code": "MU.US",
+        "tencent": "usMU",
+        "market": "美股",
+        "currency": "USD"
+      },
+      {
+        "name": "台积电",
+        "code": "TSM.US",
+        "tencent": "usTSM",
+        "market": "美股 ADR",
+        "currency": "USD"
+      },
+      {
+        "name": "中芯国际",
+        "code": "688981.SH",
+        "tencent": "sh688981",
+        "market": "科创板",
+        "currency": "CNY"
+      }
     ]
   }
 }
