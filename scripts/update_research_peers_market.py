@@ -212,6 +212,9 @@ def build_peer_record(p: dict, price, cap_native, year_return_pct, fx: dict) -> 
     ccy = p.get("currency") or currency_of(p["tencent"]) or "CNY"
     rec = {
         "code": p["code"], "name": p["name"], "market": p["market"],
+        # 页面就地水合按腾讯代码匹配单元格（data-pm-cap="sz000858"）——
+        # 展示用的 code 是「000858.SZ」这类可读格式，两者不是一回事，必须都落盘。
+        "tencent": p["tencent"],
         "currency": ccy, "price": price,
         "market_cap_yi_native": cap_native,
         "market_cap_yi": None,

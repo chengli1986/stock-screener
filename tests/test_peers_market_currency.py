@@ -90,6 +90,21 @@ class TestRecordKeepsProvenance:
         assert rec["market_cap_yi"] == round(19900 * 7.18)
         assert rec["currency"] == "USD"
 
+    def test_keeps_tencent_code_for_page_cell_matching(self):
+        """★页面就地水合按 data-pm-cap="sz000858" 匹配单元格，靠的是 tencent 码。
+
+        首版没落这个字段，页面 JS 拿 `p.code`（展示格式「000858.SZ」）去匹配，
+        静默匹配不上——脚注更新了、数字没变，看起来像「刷新过了」，实则没有。
+        """
+        rec = upm.build_peer_record(
+            {"name": "五粮液", "code": "000858.SZ", "tencent": "sz000858",
+             "market": "深主板", "currency": "CNY"},
+            price=74.48, cap_native=2891.0, year_return_pct=-37.1, fx={},
+        )
+
+        assert rec["tencent"] == "sz000858"
+        assert rec["code"] == "000858.SZ"     # 展示格式与匹配键是两回事
+
     def test_records_the_rate_actually_used(self):
         """页面要能说清「按 7.18 换算」，否则读者无法复核。"""
         rec = upm.build_peer_record(
