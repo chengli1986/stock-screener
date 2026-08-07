@@ -82,35 +82,46 @@ class TestHkSnapshotUsesConvertedCap:
               "vol_ratio_5_60": 1.5, "week52_high": 2980.0, "week52_low": 116.1,
               "week52_is_full": False}
 
-    def _build(self):
+    def _build(self, tmp_path):
+        """★必须 patch DATA_DIR。
+
+        `build_snapshot` 内部会调 `resolve_consensus()` 去读
+        `docs-site/data/{key}-consensus.json`；不 patch 的话这个类看似在测
+        `_STOCK` 里声明的固定输入，实际吃的是**生产数据**——2026-08-07 重跑一次
+        consensus（智谱预期变动）就把它跑挂了，期望值 110.8 变成 107.6。
+
+        测试断言的是「换算逻辑对不对」，不该随生产数据漂移。指向空目录后
+        `resolve_consensus` 回落到 `_STOCK["consensus"]`，输入才真正固定。
+        """
         import unittest.mock as mock
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
-             mock.patch.object(urs, "fetch_fx_rate", return_value=0.8604):
+             mock.patch.object(urs, "fetch_fx_rate", return_value=0.8604), \
+             mock.patch.object(urs, "DATA_DIR", tmp_path):
             return urs.build_snapshot(self._STOCK)
 
-    def test_ps_uses_converted_market_cap(self):
+    def test_ps_uses_converted_market_cap(self, tmp_path):
         """4134 亿 CNY / 37.30 亿 = 110.8x（而非未换算的 128.8x）。"""
-        snap = self._build()
+        snap = self._build(tmp_path)
 
         assert snap["ps_estimates"]["2026E"] == pytest.approx(110.8, abs=0.5)
 
-    def test_ps_2027_also_converted(self):
-        snap = self._build()
+    def test_ps_2027_also_converted(self, tmp_path):
+        snap = self._build(tmp_path)
 
         assert snap["ps_estimates"]["2027E"] == pytest.approx(43.3, abs=0.5)
 
-    def test_snapshot_records_fx_for_reproducibility(self):
+    def test_snapshot_records_fx_for_reproducibility(self, tmp_path):
         """汇率与币种必须落盘，否则事后无法复算这个 PS 是怎么来的。"""
-        snap = self._build()
+        snap = self._build(tmp_path)
 
         assert snap["fx_rate"] == pytest.approx(0.8604)
         assert snap["quote_currency"] == "HKD"
         assert snap["consensus_currency"] == "CNY"
 
-    def test_market_cap_yi_stays_in_quote_currency(self):
+    def test_market_cap_yi_stays_in_quote_currency(self, tmp_path):
         """展示用市值仍是港元口径 —— 换算只用于估值分母对齐，不该改变行情展示。"""
-        snap = self._build()
+        snap = self._build(tmp_path)
 
         assert snap["market_cap_yi"] == 4805
 
