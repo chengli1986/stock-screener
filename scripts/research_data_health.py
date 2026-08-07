@@ -35,6 +35,7 @@ BJT = timezone(timedelta(hours=8))
 SNAPSHOT_MAX_DAYS = 4     # 工作日刷新；4 天容忍长周末，持续失败次日即被抓
 FINANCIALS_MAX_DAYS = 40  # 每月 1 日刷新
 PEERS_MAX_DAYS = 4
+CONSENSUS_MAX_DAYS = 40   # 每月 1 日刷新，与 financials 同频同阈值
 
 
 def _load_env() -> dict:
@@ -99,6 +100,38 @@ def check_file(path: pathlib.Path, date_field: str, max_days: int, today: date):
     return None
 
 
+def check_consensus_source(stocks: list, data_dir: pathlib.Path, today: date) -> list:
+    """估值分母是否已回落到注册表兜底值。
+
+    ★这是本脚本原本抓不到的一类失败：抓取失败时页面**不空、不报错**，而是平静地
+    显示一个用登记日旧预期算出的 PE/PS（旭创注册表写 480 亿、实际 548 亿，差 14%）。
+    `consensus_source` 字段记下了，但没人会去看。在「读研报下投资判断」的用法下，
+    静默的错数字比明显的空值危险得多。
+
+    文件缺失不在这里报 —— 已由 `check_file` 报「文件缺失」，不重复。
+    """
+    out = []
+    for s in stocks:
+        key = s.get("snapshot_key") or s.get("symbol")
+        path = data_dir / f"{key}-snapshot.json"
+        if not path.exists():
+            continue
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue      # JSON 坏了同样由 check_file 报
+        src = d.get("consensus_source")
+        if src == "auto":
+            continue
+        detail = "字段缺失" if src is None else f"consensus_source={src}"
+        out.append({
+            "file": path.name,
+            "issue": (f"估值分母回落到注册表兜底值（{detail}）——该值自登记日起从未更新，"
+                      f"页面正在显示可能过时的 PE/PS，请检查 research-consensus cron"),
+        })
+    return out
+
+
 def collect_stale(today: date) -> list:
     stale = []
     stocks = json.loads(STOCKS_FILE.read_text())
@@ -107,9 +140,13 @@ def collect_stale(today: date) -> list:
         for r in (
             check_file(DOCS_DATA_DIR / f"{key}-snapshot.json", "as_of", SNAPSHOT_MAX_DAYS, today),
             check_file(DOCS_DATA_DIR / f"{key}-financials.json", "updated_at", FINANCIALS_MAX_DAYS, today),
+            # consensus 是估值分母的来源却一直没被监控：整月 cron 失败时 snapshot 照常
+            # 每日刷新（分子是新的），分母停在上个月，三类检查全部显示「新鲜」。
+            check_file(DOCS_DATA_DIR / f"{key}-consensus.json", "fetched_at", CONSENSUS_MAX_DAYS, today),
         ):
             if r:
                 stale.append(r)
+    stale.extend(check_consensus_source(stocks, DOCS_DATA_DIR, today))
     if PEERS_FILE.exists():
         peers_cfg = json.loads(PEERS_FILE.read_text())
         for code in peers_cfg:
@@ -127,11 +164,18 @@ def build_html(stale: list, today: date) -> str:
         f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r['issue']}</td></tr>"
         for r in stale
     )
+    n_fallback = sum(1 for r in stale if "兜底" in r["issue"])
+    n_stale = len(stale) - n_fallback
+    parts = []
+    if n_stale:
+        parts.append(f"{n_stale} 个数据文件超过新鲜度阈值")
+    if n_fallback:
+        parts.append(f"<b>{n_fallback} 只标的的估值分母已回落到注册表兜底值</b>")
     return (
         "<html><body style='font-family:sans-serif'>"
-        f"<h3>⚠️ 研报数据陈旧告警（{today} BJT）</h3>"
-        f"<p>{len(stale)} 个数据文件超过新鲜度阈值，研报可能在静默显示旧数据——请检查对应 cron"
-        "（research-snapshots / research-peers-market / research-financials）。</p>"
+        f"<h3>⚠️ 研报数据告警（{today} BJT）</h3>"
+        f"<p>{'；'.join(parts)}。研报可能在<b>静默显示错误数字</b>——请检查对应 cron"
+        "（research-snapshots / research-consensus / research-peers-market / research-financials）。</p>"
         "<table style='border-collapse:collapse;font-size:13px'>"
         "<tr><th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>文件</th>"
         "<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>问题</th></tr>"

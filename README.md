@@ -325,6 +325,14 @@ The first pool-wide run exposed that every overseas peer had a null 1-year retur
 
 Two suspicious numbers were checked against yfinance rather than assumed: 三星电机 +697% and 美光 +722% are real (154,188→1,229,000 KRW and 109→893 USD over exactly one year), consistent with the watchlist's own A-share moves. **Cron**: timeout 240s → 600s (measured 92s; the ceiling covers the worst case of 22 yfinance calls each hitting their 30s guard). **Tests**: `tests/test_peers_market_currency.py`, 28 unit tests.
 
+**Valuation-denominator monitoring (2026-08-07)**: two blind spots in `research_data_health.py`, both of the "silently wrong rather than visibly broken" kind that matter most when a human reads the pages to make investment calls.
+
+First, `resolve_consensus()` falls back to the hand-maintained block in `research_stocks.json` when the auto fetch fails — and those figures have not moved since each stock was registered (旭创 records 480亿 against an actual 548亿, 14% off). A failed fetch therefore produces neither a blank nor an error but a calmly rendered, wrong PE. The `consensus_source` field recorded it all along; nobody was ever going to read that field. It is now an alert whose text states the consequence ("估值分母回落到注册表兜底值…页面正在显示可能过时的 PE/PS"), not merely the state. A missing field counts as unhealthy rather than passing by default.
+
+Second, `{key}-consensus.json` had no staleness check at all — the health script covered snapshot, financials and peers-market only, while consensus is the source of the denominator. If a monthly run failed outright, snapshots would keep refreshing daily (numerator current), the denominator would sit a month behind, and all three existing checks would report "fresh". Added at `CONSENSUS_MAX_DAYS = 40`, matching financials' monthly cadence. The alert was fired end-to-end against a simulated fixture rather than assumed to work — this class of monitor characteristically has never actually triggered.
+
+**Cron**: `research-consensus` gains a second entry `45 0 * 4,5,8,9 1` — Mondays during 4/5/8/9, the months around the 4-30 annual and 8-31 interim reporting deadlines when estimates get revised in bulk. Same `--name`, so the lock drops a duplicate if the 1st happens to fall on a Monday. Rationale: market cap refreshes every trading day while estimates refreshed monthly, so late-August readers were seeing a new price over a pre-interim-season estimate. **Tests**: `tests/test_data_health_consensus.py`, 11 unit tests.
+
 ### Design artifacts
 
 - [Design spec](docs/superpowers/specs/2026-04-14-stock-screener-design.md) — ~800 lines, 5-round review, 6 findings fixed
