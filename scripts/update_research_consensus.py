@@ -977,6 +977,135 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
     if DEPLOY_DATA.is_dir():
         shutil.copy2(path, DEPLOY_DATA / path.name)
 
+    # 顺带记一笔修正历史。放在这里而不是 main 的两处调用点旁边——
+    # 那样早晚会漏掉一处，而「算了没接」是这套管线已经犯过的错
+    # （preferred_stat 落盘了但页面仍用旧口径）。
+    try:
+        hist = append_history(snapshot_key, record, DOCS_DATA)
+        if DEPLOY_DATA.is_dir():
+            shutil.copy2(hist, DEPLOY_DATA / hist.name)
+    except Exception as e:  # noqa: BLE001 — 历史是加分项，不该拖垮当期数据落盘
+        print(f"WARN: [{snapshot_key}] 修正历史写入失败: {type(e).__name__}: {e}",
+              file=sys.stderr)
+
+
+# ── 预期修正历史（revision momentum 的地基） ──────────────────────────────────
+#
+# `{key}-consensus.json` 是覆盖写的，跑完就没有上一版。想知道「机构在上调还是
+# 下调」必须有跨时间的观测点。从 git 历史刨的想法已被 2026-08-07 实测否决：
+# 该文件共 5 个版本全部落在 8-03~8-04 两天内（开发迭代产物，不是时间序列），
+# 且 commit 日期 ≠ 观测日期。故改为显式追加 jsonl，一次抓取一行。
+#
+# 修正方向是这套管线里唯一可能带 alpha 的维度——估值/财务/同业市值都是「现状」，
+# 而预期被上调还是下调是**市场看法的变化率**。本轮回撤的实证：旭创跌 33% 但
+# 2027E 被上调 14%（错位），源杰跌 35% 而 2027E 营收被下调 24%（基本面恶化）——
+# 同样是深跌，只有修正数据能区分。
+
+REVISION_FLAT_BAND_PCT = 2.0      # ±2% 内视为无修正（机构微调模型参数是常态）
+REVISION_LOOKBACK_DAYS = 90
+
+
+def build_history_observation(record: dict) -> dict:
+    """把一次抓取压成一行观测。口径与页面/买点告警一致（截尾均值优先）。"""
+    fetched = str(record.get("fetched_at") or "")[:10]
+    stats = record.get("broker_stats") or {}
+    years: dict = {}
+    for year, est in (record.get("estimates") or {}).items():
+        if not str(year).endswith("E"):
+            continue
+        bs = stats.get(year) or {}
+        profit = bs.get("preferred_value")
+        if profit is None:
+            profit = (est or {}).get("profit_yuan")
+        years[year] = {
+            "profit": profit,
+            "revenue": (est or {}).get("revenue_yuan"),
+            # 机构数变化本身是信号——新增覆盖常伴随预期跳变
+            "count": bs.get("count"),
+        }
+    return {"as_of": fetched, "years": years}
+
+
+def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> pathlib.Path:
+    """追加一条观测；**同日重跑覆盖而非追加**。
+
+    开发期一天会跑很多次，若都留下会冒充成多个观测点，
+    把「一天内的重复抓取」误读成「预期在剧烈修正」。
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
+    obs = build_history_observation(record)
+
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("as_of") != obs["as_of"]:
+                rows.append(r)
+    rows.append(obs)
+    rows.sort(key=lambda r: r.get("as_of") or "")
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                    encoding="utf-8")
+    return path
+
+
+def revision_momentum(snapshot_key: str, year: str, data_dir: pathlib.Path,
+                      lookback_days: int = REVISION_LOOKBACK_DAYS) -> dict:
+    """窗口内最早观测 → 最新观测的预期变化。
+
+    比较基准取**窗口内最早**而非上一次：周频抓取时「与上次比」几乎总是 flat，
+    看不出趋势。只有一个观测点时返回 `insufficient` 而不是 0% ——
+    0% 会被读成「预期稳定」，而事实是我们根本不知道。
+    """
+    none_result = {"direction": "insufficient", "change_pct": None,
+                   "from_date": None, "to_date": None, "span_days": None}
+    path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
+    if not path.exists():
+        return none_result
+
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        v = ((r.get("years") or {}).get(year) or {}).get("profit")
+        if v and r.get("as_of"):
+            rows.append((r["as_of"], float(v)))
+    if len(rows) < 2:
+        return none_result
+
+    rows.sort(key=lambda x: x[0])
+    to_date, to_val = rows[-1]
+    try:
+        cutoff = (datetime.strptime(to_date, "%Y-%m-%d")
+                  - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    except ValueError:
+        return none_result
+    window = [r for r in rows if r[0] >= cutoff]
+    if len(window) < 2:
+        return none_result
+
+    from_date, from_val = window[0]
+    if from_val <= 0:
+        return none_result
+    change = (to_val / from_val - 1) * 100
+    direction = ("flat" if abs(change) < REVISION_FLAT_BAND_PCT
+                 else ("up" if change > 0 else "down"))
+    span = (datetime.strptime(to_date, "%Y-%m-%d")
+            - datetime.strptime(from_date, "%Y-%m-%d")).days
+    return {"direction": direction, "change_pct": round(change, 1),
+            "from_date": from_date, "to_date": to_date, "span_days": span}
+
 
 def _fmt_yi(value: float | None) -> str:
     return f"{value / 1e8:.1f}亿" if value is not None else "—"
