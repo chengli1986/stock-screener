@@ -6,6 +6,7 @@
     "snapshot_key": "300308",
     "page": "/innolight-300308.html",
     "business": "高速光模块",
+    "h_share": { "code": "03308", "tencent": "hk03308" },
     "report_keywords": ["1.6T OSFP", "800G OSFP", "800G和1.6T"],
     "consensus": {
       "2026E": { "label": "2026E", "profit_yuan": 28500000000 },
@@ -148,6 +149,7 @@
     "snapshot_key": "300408",
     "page": "/sanhuan-300408.html",
     "business": "电子陶瓷元件",
+    "h_share": { "code": "06951", "tencent": "hk06951" },
     "valuation_mode": "both",
     "consensus": {
       "2026E": { "label": "2026E", "revenue_yuan": 11200000000, "profit_yuan": 3270000000 },
@@ -162,6 +164,7 @@
     "snapshot_key": "300750",
     "page": "/catl-300750.html",
     "business": "动力电池",
+    "h_share": { "code": "03750", "tencent": "hk03750" },
     "consensus": {
       "2026E": { "label": "2026E", "profit_yuan": 92000000000 },
       "2027E": { "label": "2027E", "profit_yuan": 113000000000 }

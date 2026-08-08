@@ -121,10 +121,29 @@ class TestFetchQtData:
         assert d["vol_wan_shou"] == 16.6
 
     def test_return_shape_matches_em_data(self):
-        """返回字段与 fetch_em_data 一致,build_snapshot 可无缝替换。"""
+        """返回字段与 fetch_em_data 一致,build_snapshot 可无缝替换。
+
+        改为**直接比对两个源**而不是硬编码字段名单（2026-08-08）：
+        给腾讯加 `turnover_yuan` 时这条挂了，暴露出硬编码写法只能提醒
+        「有人改了腾讯」，却检查不出真正要防的那件事——**备源少了同一个字段**。
+        直接比对才是这条测试名字所声称的语义，将来扩字段也不会误报。
+        """
         with mock.patch.object(urs, "_get_with_retry", return_value=_qt_response(QT_SZ300308)):
-            d = urs.fetch_qt_data("300308", "SZ")
-        assert set(d.keys()) == {"price_yuan", "market_cap_yuan", "change_pct", "vol_wan_shou"}
+            qt = urs.fetch_qt_data("300308", "SZ")
+
+        em_payload = {"data": {"f43": 91987, "f116": 1.076004e12, "f170": 150,
+                               "f47": 571892, "f48": 5.467e10}}
+
+        class _R:
+            @staticmethod
+            def json():
+                return em_payload
+
+        with mock.patch.object(urs, "_get_with_retry", return_value=_R()):
+            em = urs.fetch_em_data("300308", "SZ")
+
+        assert set(qt.keys()) == set(em.keys())
+        assert "turnover_yuan" in qt   # 两边都掉了字段时上一行仍会通过，故显式钉住
 
     def test_malformed_response_raises(self):
         with mock.patch.object(urs, "_get_with_retry", return_value=_qt_response("pv_none_match")):

@@ -88,7 +88,9 @@ BJT = timezone(timedelta(hours=8))
 # push2delay 字段与 push2 逐字节一致（已对照国内 IP 验证），且未封海外。
 _EM_URL = "https://push2delay.eastmoney.com/api/qt/stock/get"
 _EM_UT = "fa5fd1943c7b386f172d6893dbfba10b"
-_EM_FIELDS = "f57,f58,f43,f116,f162,f163,f170,f47"
+# f48 = 成交额（元）——A+H 标的要用它与 H 股比流动性；主源腾讯已提供，
+# 备源必须给出**相同结构**，否则回退时字段静默缺失。
+_EM_FIELDS = "f57,f58,f43,f116,f162,f163,f170,f47,f48"
 # f57=symbol, f58=name, f43=price(×100), f116=市值(元), f162=PE-TTM-s(×100), f163=PE-TTM-d(×100)
 # f170=涨跌幅%(×100), f47=成交量(手)
 
@@ -129,11 +131,14 @@ def fetch_em_data(symbol: str, exchange: str) -> dict:
     raw_vol = int(_vv) if isinstance(_vv, (int, float)) else 0
     change_pct = round(raw_change / 100, 2)
     vol_wan_shou = round(raw_vol / 10000, 1)
+    _va = data.get("f48")
+    turnover_yuan = float(_va) if isinstance(_va, (int, float)) else None
     return {
         "price_yuan": price_yuan,
         "market_cap_yuan": market_cap,
         "change_pct": change_pct,
         "vol_wan_shou": vol_wan_shou,
+        "turnover_yuan": turnover_yuan,
     }
 
 
@@ -181,11 +186,15 @@ def fetch_qt_data(symbol: str, exchange: str) -> dict[str, float]:
     raw_vol = float(fields[36]) if fields[36] else 0.0
     # 科创板(688)成交量单位是股，其他板块是手
     vol_shou = raw_vol / 100 if symbol.startswith("688") else raw_vol
+    # [37] 成交额，单位万元。A+H 标的要用它跟 H 股成交额比流动性
+    # （H 股只占 4% 股本，不看成交额就无从判断那边的价格有多少分量）。
+    turnover_yuan = float(fields[37]) * 1e4 if len(fields) > 37 and fields[37] else None
     return {
         "price_yuan": price_yuan,
         "market_cap_yuan": market_cap_yi * 1e8,
         "change_pct": change_pct,
         "vol_wan_shou": round(vol_shou / 10000, 1),
+        "turnover_yuan": turnover_yuan,
     }
 
 
@@ -395,6 +404,96 @@ _QUOTE_CCY = {"SH": "CNY", "SZ": "CNY", "HK": "HKD"}
 _FX_TICKER = {("HKD", "CNY"): "HKDCNY=X"}
 
 
+# ── A+H 两地上市：H 股补充信息 ────────────────────────────────────────────────
+#
+# 观察池 11 只里 3 只是 A+H（旭创 03308 / 宁德 03750 / 三环 06951，
+# 2026-08-08 用 akshare stock_zh_ah_name() 核实）。
+#
+# ★**上市主体相同**——两地「市值 ÷ 股价」反算股本完全一致（旭创都是 11.70 亿股），
+# 不存在母子公司之分。真正的差别是 **H 股只发了 3.6%–4.7%**，日成交额是 A 股的
+# 1/10 到 1/28。所以 A 股仍是主口径，估值分母对齐照旧用 A 股市值；
+# H 股信息是**补充背景**，不是对 PE 的修正。
+#
+# 价差方向三只并不一致（A 折价 3.6% / 28.7%、A 溢价 38.4%），成因未验证，
+# 故只呈现数据，不在页面上做因果解释。
+
+_AH_FLAT_KEYS = ("price", "total_cap_hkd_yuan", "float_cap_hkd_yuan", "turnover_hkd_yuan")
+
+
+def fetch_h_quote(tencent_code: str) -> dict | None:
+    """腾讯 qt 抓 H 股：现价 / 总市值 / 流通市值 / 成交额（均为港元口径）。"""
+    r = _get_with_retry(f"https://qt.gtimg.cn/q={tencent_code}",
+                        headers={"Referer": "https://gu.qq.com/"},
+                        label=f"[{tencent_code}] H 股 qt")
+    r.encoding = "gbk"
+    txt = r.text.strip()
+    if "=" not in txt:
+        raise ValueError(f"H 股 qt 返回异常: {txt[:60]}")
+    f = txt.split("=", 1)[1].strip().strip('";').split("~")
+    if len(f) < 46 or not f[3]:
+        raise ValueError(f"H 股 qt 字段不足: len={len(f)}")
+    return {
+        "price": float(f[3]),
+        "total_cap_hkd_yuan": float(f[45]) * 1e8 if f[45] else None,
+        "float_cap_hkd_yuan": float(f[44]) * 1e8 if f[44] else None,
+        "turnover_hkd_yuan": float(f[37]) if f[37] else None,
+    }
+
+
+def compute_ah(a_price: float, h: dict | None, fx: float | None,
+               a_turnover_yi: float | None = None,
+               a_total_shares_yi: float | None = None) -> dict | None:
+    """组装 H 股补充信息。
+
+    `a_premium_pct` 跟随**恒生 AH 股溢价指数**口径：A股价 ÷ H股折人民币 − 1，
+    **正值＝A 股更贵**。方向搞反会让读者做出相反判断，故在测试里钉死。
+
+    没有汇率时 `a_premium_pct` 置 None 而不按 1:1 算 —— 与港股 PS 换算同一立场。
+    """
+    if not h or not h.get("price"):
+        return None
+
+    h_price = float(h["price"])
+    h_price_cny = round(h_price * fx, 2) if fx else None
+    premium = None
+    if h_price_cny and h_price_cny > 0:
+        premium = round((a_price / h_price_cny - 1) * 100, 1)
+
+    h_shares_yi = None
+    h_float_pct = None
+    if h.get("float_cap_hkd_yuan") and h_price > 0:
+        h_shares_yi = h["float_cap_hkd_yuan"] / 1e8 / h_price
+        if h.get("total_cap_hkd_yuan"):
+            total_yi = h["total_cap_hkd_yuan"] / 1e8 / h_price
+            if total_yi > 0:
+                h_float_pct = round(h_shares_yi / total_yi * 100, 1)
+
+    h_turnover_yi_cny = None
+    ratio = None
+    if h.get("turnover_hkd_yuan") and fx:
+        h_turnover_yi_cny = round(h["turnover_hkd_yuan"] / 1e8 * fx, 1)
+        if a_turnover_yi and h_turnover_yi_cny > 0:
+            ratio = round(a_turnover_yi / h_turnover_yi_cny, 1)
+
+    consistent = None
+    if a_total_shares_yi and h.get("total_cap_hkd_yuan") and h_price > 0:
+        h_total_yi = h["total_cap_hkd_yuan"] / 1e8 / h_price
+        consistent = abs(h_total_yi - a_total_shares_yi) / a_total_shares_yi < 0.02
+
+    return {
+        "h_price_hkd": round(h_price, 3),
+        "h_price_cny": h_price_cny,
+        "fx_hkd_cny": round(fx, 4) if fx else None,
+        "a_premium_pct": premium,
+        "h_shares_yi": round(h_shares_yi, 2) if h_shares_yi else None,
+        "h_float_pct": h_float_pct,
+        "h_turnover_yi_cny": h_turnover_yi_cny,
+        "a_turnover_yi_cny": round(a_turnover_yi, 1) if a_turnover_yi else None,
+        "turnover_ratio_a_over_h": ratio,
+        "shares_consistent": consistent,
+    }
+
+
 def quote_currency(exchange: str) -> str:
     """交易所 → 报价币种。"""
     return _QUOTE_CCY.get(exchange, "CNY")
@@ -506,6 +605,29 @@ def build_snapshot(stock: dict) -> dict:
     # 仅用于估值分母对齐；展示用的 market_cap_yi 仍保持报价币种
     valuation_cap = convert_market_cap(market_cap_yuan, q_ccy, c_ccy, fx_rate)
 
+    # A+H 两地上市：抓 H 股作补充背景。必须与 A 股**同一次跑**里取，
+    # 拿今天的 A 股价对昨天的 H 股价算溢价是错的。
+    # 加分项——抓不到时主快照照常产出（H 股失败不该连累 11 只的日更）。
+    ah = None
+    h_cfg = stock.get("h_share")
+    if h_cfg:
+        try:
+            h_quote = fetch_h_quote(h_cfg["tencent"])
+            ah_fx = fetch_fx_rate("HKD", "CNY")
+            ah = compute_ah(
+                a_price=price_yuan, h=h_quote, fx=ah_fx,
+                a_turnover_yi=(quote.get("turnover_yuan") or 0) / 1e8 or None,
+                a_total_shares_yi=(market_cap_yuan / 1e8 / price_yuan) if price_yuan else None,
+            )
+            if ah:
+                ah["h_code"] = h_cfg["code"]
+                print(f"  [{symbol}] H 股 {h_cfg['code']}: HK${ah['h_price_hkd']} "
+                      f"→ A 股溢价 {ah['a_premium_pct']}%（H 占股本 {ah['h_float_pct']}%）",
+                      flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN: [{symbol}] H 股补充信息不可用（{type(e).__name__}: {e}）",
+                  file=sys.stderr, flush=True)
+
     consensus, consensus_source = resolve_consensus(stock)
 
     valuation_mode = stock.get("valuation_mode", "pe")
@@ -536,6 +658,8 @@ def build_snapshot(stock: dict) -> dict:
         "quote_currency": q_ccy,
         "consensus_currency": c_ccy,
         "fx_rate": round(fx_rate, 6) if fx_rate else None,
+        # A+H 两地上市才有；单一上市地为 None，页面据此决定是否显示
+        "ah": ah,
         "technical": {
             "ma20": ohlcv["ma20"],
             "ma20_slope": ohlcv["ma20_slope"],
