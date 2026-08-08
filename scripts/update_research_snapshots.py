@@ -504,6 +504,102 @@ def compute_ah(a_price: float, h: dict | None, fx: float | None,
     }
 
 
+# ── A/H 溢价的历史序列 ────────────────────────────────────────────────────────
+#
+# 只有「今天一个数」时读者无从判断 28.5% 是常态还是异常。实测宁德：上市当天
+# 两地几乎平价（A 折价 3.0%），两个半月后拉到 26.3%，此后**整整一年稳定在
+# 18%–35%**——所以当前值属常态区间偏深，而非突发。这个判断只有历史序列给得出。
+#
+# 序列用**当期汇率贯穿全程**：溢价随时间变化有「价格分化」和「汇率变动」两个
+# 来源，固定汇率可把后者剔除，让曲线只反映前者。代价是历史点位不等于当时的真实
+# 换算值，故字段名标 `fx_used`，页面注明口径。
+
+AH_FX_LO, AH_FX_HI = 0.84, 0.88   # 汇率敏感度测试区间
+AH_HISTORY_DAYS = 800             # 覆盖 H 股上市以来（宁德 2025-05-20 至今约 291 个共同交易日）
+
+
+def fetch_closes(tencent_code: str, days: int = AH_HISTORY_DAYS) -> dict:
+    """抓收盘价序列 {date: close}。两地各抓一次，用于构建溢价历史。"""
+    r = _get_with_retry(
+        _TENCENT_URL,
+        params={"param": f"{tencent_code},day,,,{days},qfq"},
+        headers={"Referer": "https://gu.qq.com/"},
+        timeout=20,
+        label=f"[{tencent_code}] ah-kline",
+    )
+    d = r.json().get("data", {}).get(tencent_code, {})
+    rows = d.get("qfqday") or d.get("day") or []
+    return {str(x[0])[:10]: float(x[2]) for x in rows if len(x) >= 3}
+
+
+def build_ah_series(a_closes: dict, h_closes: dict, fx: float) -> list:
+    """按两地**共同交易日**构建溢价序列。
+
+    只取交集：两地节假日不同（香港耶稣受难日、内地清明等），
+    否则会拿 A 股今天对 H 股昨天算溢价。
+    """
+    out = []
+    for d in sorted(set(a_closes) & set(h_closes)):
+        a, h = float(a_closes[d]), float(h_closes[d])
+        hc = h * fx
+        if hc <= 0:
+            continue
+        out.append({"date": d, "a": round(a, 2), "h": round(h, 2),
+                    "premium_pct": round((a / hc - 1) * 100, 1)})
+    return out
+
+
+def ah_stats(series: list) -> dict | None:
+    """当前值 + 历史区间 + **分位**。
+
+    分位回答「当前溢价在历史什么位置」：0 = 历史最深折价，100 = 历史最高溢价。
+    同样是「折价」，处在历史最深端和处在中位，投资含义完全不同。
+    """
+    if not series:
+        return None
+    vals = sorted(x["premium_pct"] for x in series)
+    cur = series[-1]["premium_pct"]
+    n = len(vals)
+    below = sum(1 for v in vals if v < cur)
+    pct = round(below / (n - 1) * 100) if n > 1 else 50
+    mid = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    return {"current_pct": cur, "min_pct": vals[0], "max_pct": vals[-1],
+            "median_pct": round(mid, 1), "percentile": pct,
+            "days": n, "since": series[0]["date"]}
+
+
+def ah_formation(series: list) -> dict | None:
+    """溢价是「一开始就有」还是「后来拉开」——决定解释方向。
+
+    宁德实测是后者（上市日 3.0% → 2.5 个月后 26.3%），
+    说明不是发行定价造成的，而是上市后的价格分化。
+    """
+    if not series:
+        return None
+    first, cur = series[0]["premium_pct"], series[-1]["premium_pct"]
+    lo = min(series, key=lambda x: x["premium_pct"])
+    hi = max(series, key=lambda x: x["premium_pct"])
+    return {"first_pct": first, "first_date": series[0]["date"],
+            "widened": abs(cur - first) >= 10.0,
+            "min_date": lo["date"], "max_date": hi["date"]}
+
+
+def ah_fx_sensitivity(a_price: float, h_price: float,
+                      fx_lo: float = AH_FX_LO, fx_hi: float = AH_FX_HI) -> dict:
+    """溢价在合理汇率区间内怎么变——判断这个数字站不站得住。
+
+    ★旭创实测：0.84~0.88 之间折价从 1.3% 变到 5.8%，**波动幅度比折价本身还大**，
+    这个数字支撑不了任何判断。而宁德全区间都是 −27%~−30%，汇率解释不了。
+    判据：区间宽度是否小于溢价绝对值的一半。
+    """
+    lo = (a_price / (h_price * fx_hi) - 1) * 100    # 汇率高 → H 折人民币贵 → A 更折价
+    hi = (a_price / (h_price * fx_lo) - 1) * 100
+    span = abs(hi - lo)
+    mid = abs((hi + lo) / 2)
+    return {"lo_pct": round(hi, 1), "hi_pct": round(lo, 1),
+            "span_pct": round(span, 1), "significant": mid > span}
+
+
 def quote_currency(exchange: str) -> str:
     """交易所 → 报价币种。"""
     return _QUOTE_CCY.get(exchange, "CNY")
@@ -631,9 +727,34 @@ def build_snapshot(stock: dict) -> dict:
             )
             if ah:
                 ah["h_code"] = h_cfg["code"]
+                ah["fx_sensitivity"] = ah_fx_sensitivity(price_yuan, h_quote["price"])
                 print(f"  [{symbol}] H 股 {h_cfg['code']}: HK${ah['h_price_hkd']} "
                       f"→ A 股溢价 {ah['a_premium_pct']}%（H 占股本 {ah['h_float_pct']}%）",
                       flush=True)
+                # 溢价历史：只有今天一个数时，读者无从判断这是常态还是异常
+                try:
+                    a_cl = fetch_closes(qt_code(symbol, exchange))
+                    h_cl = fetch_closes(h_cfg["tencent"])
+                    series = build_ah_series(a_cl, h_cl, ah_fx or 0)
+                    if series:
+                        write_ah_history(stock["snapshot_key"], {
+                            "symbol": symbol, "name": stock["name"],
+                            "h_code": h_cfg["code"], "as_of": as_of,
+                            "fx_used": round(ah_fx, 4) if ah_fx else None,
+                            "fx_note": "历史序列全程使用当期汇率，以隔离汇率变动、"
+                                       "只反映两地价格分化",
+                            "stats": ah_stats(series),
+                            "formation": ah_formation(series),
+                            "fx_sensitivity": ah["fx_sensitivity"],
+                            "series": series,
+                        })
+                        st = ah_stats(series)
+                        print(f"  [{symbol}]   溢价历史 {st['days']} 天（{st['since']} 起）"
+                              f"区间 {st['min_pct']}%~{st['max_pct']}% 当前分位 {st['percentile']}",
+                              flush=True)
+                except Exception as e:  # noqa: BLE001
+                    print(f"WARN: [{symbol}] 溢价历史不可用（{type(e).__name__}: {e}）",
+                          file=sys.stderr, flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"WARN: [{symbol}] H 股补充信息不可用（{type(e).__name__}: {e}）",
                   file=sys.stderr, flush=True)
@@ -684,6 +805,16 @@ def build_snapshot(stock: dict) -> dict:
         "updated_at": datetime.now(BJT).isoformat(),
     }
     return snapshot
+
+
+def write_ah_history(key: str, payload: dict) -> None:
+    """溢价历史独立成文件——序列有数百点，塞进 snapshot 会让日更 JSON 膨胀数十倍，
+    而页面顶部数据条并不需要它（只有 §AH 那一节才 fetch）。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    src = DATA_DIR / f"{key}-ah-history.json"
+    src.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if DEPLOY_DATA_DIR.is_dir():
+        shutil.copy2(src, DEPLOY_DATA_DIR / src.name)
 
 
 def write_and_deploy(key: str, snapshot: dict) -> None:
