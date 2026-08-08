@@ -480,11 +480,21 @@ def compute_ah(a_price: float, h: dict | None, fx: float | None,
         h_total_yi = h["total_cap_hkd_yuan"] / 1e8 / h_price
         consistent = abs(h_total_yi - a_total_shares_yi) / a_total_shares_yi < 0.02
 
+    # 按 H 股价计的**全公司**市值：腾讯 H 股 [45] 就是 H股价 × 全部股本，
+    # 即「若全部股份按 H 股价格计价，这家公司值多少」——这才是「H 股市场给的定价」。
+    # ★必须与 h_float_cap（H 股那 4.7% 筹码的实际市值）区分：旭创两者差 21 倍，
+    # 混为一谈会让读者以为 H 股盘子有上万亿。
+    implied_hkd = (h["total_cap_hkd_yuan"] / 1e8) if h.get("total_cap_hkd_yuan") else None
+    float_hkd = (h["float_cap_hkd_yuan"] / 1e8) if h.get("float_cap_hkd_yuan") else None
+
     return {
         "h_price_hkd": round(h_price, 3),
         "h_price_cny": h_price_cny,
         "fx_hkd_cny": round(fx, 4) if fx else None,
         "a_premium_pct": premium,
+        "h_implied_cap_yi_hkd": round(implied_hkd, 2) if implied_hkd else None,
+        "h_implied_cap_yi_cny": (round(implied_hkd * fx) if implied_hkd and fx else None),
+        "h_float_cap_yi_hkd": round(float_hkd, 2) if float_hkd else None,
         "h_shares_yi": round(h_shares_yi, 2) if h_shares_yi else None,
         "h_float_pct": h_float_pct,
         "h_turnover_yi_cny": h_turnover_yi_cny,

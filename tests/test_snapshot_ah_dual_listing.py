@@ -242,3 +242,46 @@ class TestTurnoverFieldPlumbing:
 
         assert snap["ah"]["a_turnover_yi_cny"] == pytest.approx(546.7, abs=0.5)
         assert snap["ah"]["turnover_ratio_a_over_h"] is not None
+
+
+# ── H 股定价对应的公司市值（用户提议：市值比股价更直观） ────────────────────
+
+
+class TestImpliedCapFromHShare:
+    """用户提议显示 H 股市值——理由是市值直观体现「H 股市场给这家公司的定价」。
+
+    采纳，但口径必须标清楚：腾讯 H 股的「总市值」＝ **H 股价 × 全公司总股本**，
+    是「若全部股份按 H 股价格计价，公司值多少」的换算值，
+    **不是** H 股那 4.7% 筹码的实际市值。不标注的话读者会以为 H 股盘子有这么大。
+
+    （用户提到「股价可能因股本发行数量不同而不可比」——这三只恰好不存在该问题，
+    两地反算股本一致、同股同权；但市值仍值得加，因为它把「差 28.5%」变成两个
+    可直接对照的绝对数。）
+    """
+
+    def test_implied_cap_in_cny(self):
+        """宁德实测：H 股总市值 29,263.59 亿港元 × 0.86 ≈ 25,167 亿人民币，
+        对照 A 股市值 17,955 亿——同一家公司，两个市场差 7,200 亿。"""
+        h = dict(_H_QUOTE, price=632.5, total_cap_hkd_yuan=2_926_359_240_000.0)
+        r = urs.compute_ah(a_price=388.07, h=h, fx=0.86, a_turnover_yi=98.8)
+
+        assert r["h_implied_cap_yi_cny"] == pytest.approx(25167, abs=30)
+
+    def test_implied_cap_keeps_hkd_original(self):
+        r = urs.compute_ah(a_price=919.87, h=_H_QUOTE, fx=0.86, a_turnover_yi=546.7)
+
+        assert r["h_implied_cap_yi_hkd"] == pytest.approx(12984.05, abs=1)
+
+    def test_implied_cap_is_not_the_h_float_market_value(self):
+        """★关键区分：H 股那部分的实际市值只有 604.95 亿港元，
+        与「按 H 股定价的全公司市值」12,984 亿相差 21 倍。两者都要给，不能混。"""
+        r = urs.compute_ah(a_price=919.87, h=_H_QUOTE, fx=0.86, a_turnover_yi=546.7)
+
+        assert r["h_float_cap_yi_hkd"] == pytest.approx(604.95, abs=1)
+        assert r["h_implied_cap_yi_hkd"] > r["h_float_cap_yi_hkd"] * 10
+
+    def test_no_fx_means_no_cny_conversion(self):
+        r = urs.compute_ah(a_price=919.87, h=_H_QUOTE, fx=None, a_turnover_yi=546.7)
+
+        assert r["h_implied_cap_yi_cny"] is None
+        assert r["h_implied_cap_yi_hkd"] == pytest.approx(12984.05, abs=1)
