@@ -341,6 +341,14 @@ Reconstructing the series from git history was considered and rejected on inspec
 
 Seeded across all 11 stocks on 2026-08-07; the second observation lands 2026-08-10 (the newly added reporting-season Monday run), after which momentum becomes computable. Known limitation: loss-making names (智谱, −44亿 expected) yield no meaningful percentage from a negative base and return `insufficient` — revenue would be the right basis there. **Tests**: `tests/test_consensus_history.py`, 18 unit tests.
 
+**Station-2 self-audit fixes (2026-08-08)**: reviewing what the previous day's three changes actually shipped turned up a gap in each.
+
+*Staleness threshold versus the new cadence.* `CONSENSUS_MAX_DAYS = 40` was set for monthly fetches, but 4/5/8/9 had just been switched to weekly — 40 days comfortably absorbs **five consecutive weekly failures**, cancelling out the point of the reporting-season upgrade. Simply lowering it to 10 would false-alarm at the start of a reporting month (April's first Monday can be the 6th, so the most recent fetch is March 1st — 31 days old and perfectly normal). Replaced with `expected_runs_between()`, which counts how many runs the cron rules actually called for; two missed runs alert, one is tolerated. The rule is independent of month boundaries and survives future cadence changes without retuning.
+
+*Revision momentum ignored revenue.* `revision_momentum()` read only `profit` — while the case used to justify building it was "源杰 fell 35% with 2027E **revenue** revised down 24%". The implementation could not compute its own supporting evidence. `revenue` was in the history file all along, just never read. Adding it also fixes loss-making names for free: 智谱's expected profit is negative (−44亿) so no meaningful percentage exists, but its revenue is positive and perfectly computable. The result now carries a `metric` field, because a reader must not mistake a revenue revision for a profit one.
+
+*History writes failed silently.* The append is wrapped in try/except inside `write_and_deploy()` (history is a bonus; it should not take down the current data), so a failure printed a warning and still exited 0 — no cron alert. The damaging part is that it is **indistinguishable**: `revision_momentum` returns `insufficient`, which looks exactly like "we have only just started accumulating". Months later you would find no observations at all. `check_history_keeps_up()` now compares the newest history observation against the consensus file's `fetched_at`. All three were exercised end-to-end against simulated failures. **Tests**: `tests/test_review_station2_gaps.py`, 19 unit tests.
+
 ### Design artifacts
 
 - [Design spec](docs/superpowers/specs/2026-04-14-stock-screener-design.md) — ~800 lines, 5-round review, 6 findings fixed

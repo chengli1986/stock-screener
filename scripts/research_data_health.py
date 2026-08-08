@@ -132,6 +132,92 @@ def check_consensus_source(stocks: list, data_dir: pathlib.Path, today: date) ->
     return out
 
 
+MISSED_RUNS_TOLERANCE = 1   # 容忍一次跳过（单次网络抖动），第二次才算异常
+
+
+def _consensus_fetched_date(path: pathlib.Path):
+    if not path.exists():
+        return None
+    try:
+        val = json.loads(path.read_text(encoding="utf-8")).get("fetched_at")
+        return date.fromisoformat(str(val)[:10])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def check_consensus_cadence(key: str, data_dir: pathlib.Path, today: date):
+    """按「本应触发几次」判断 consensus 是否停摆，而不是固定天数阈值。
+
+    ★固定天数在这里是双向失效的：`CONSENSUS_MAX_DAYS=40` 按月频设，
+    而 4/5/8/9 月已改为每周一抓——40 天恰好容得下**连续 5 次周失败**，
+    加密的意义被抵消；若单纯改成 10 天，又会在加密月初误报
+    （4 月第一个周一可能是 4-06，此前最近一次抓取是 3-01，距今 31 天却完全正常）。
+
+    改用 cron 规则推算，语义不依赖月份边界，将来调频率也不用重调阈值。
+    """
+    import importlib.util
+    import sys as _sys
+
+    fetched = _consensus_fetched_date(data_dir / f"{key}-consensus.json")
+    if fetched is None:
+        return None      # 文件缺失/损坏已由 check_file 报，不重复
+
+    mod = _sys.modules.get("update_research_consensus")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "update_research_consensus",
+            pathlib.Path(__file__).resolve().parent / "update_research_consensus.py")
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules["update_research_consensus"] = mod
+        spec.loader.exec_module(mod)
+
+    missed = mod.expected_runs_between(fetched, today)
+    if missed <= MISSED_RUNS_TOLERANCE:
+        return None
+    return {
+        "file": f"{key}-consensus.json",
+        "issue": (f"自 {fetched} 以来按 cron 规则应跑 {missed} 次却一次都没更新 —— "
+                  f"估值分母可能已停摆，请检查 research-consensus cron"),
+    }
+
+
+def check_history_keeps_up(key: str, data_dir: pathlib.Path):
+    """修正历史是否跟得上 consensus。
+
+    ★`write_and_deploy()` 把 history 写入包在 try/except 里（历史是加分项，
+    不该拖垮当期数据），失败只打 WARN、脚本仍 exit 0 → cron-wrapper 不告警。
+    最坏之处是**无法区分**：`revision_momentum` 会一直返回 `insufficient`，
+    而这个状态和「刚开始积累、点数还不够」长得一模一样，
+    几个月后想看修正方向才发现一个点都没攒下。
+    """
+    fetched = _consensus_fetched_date(data_dir / f"{key}-consensus.json")
+    if fetched is None:
+        return None
+
+    hp = data_dir / f"{key}-consensus-history.jsonl"
+    if not hp.exists():
+        return {"file": hp.name,
+                "issue": f"修正历史文件缺失，而 consensus 已刷到 {fetched} —— "
+                         f"revision momentum 将永远算不出"}
+
+    latest = None
+    for line in hp.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line).get("as_of")
+        except json.JSONDecodeError:
+            continue
+        if d and (latest is None or d > latest):
+            latest = d
+    if latest and date.fromisoformat(latest) >= fetched:
+        return None
+    return {"file": hp.name,
+            "issue": f"修正历史停在 {latest or '空'}，而 consensus 已刷到 {fetched} —— "
+                     f"历史写入疑似静默失败，momentum 会一直显示「数据不足」"}
+
+
 def collect_stale(today: date) -> list:
     stale = []
     stocks = json.loads(STOCKS_FILE.read_text())
@@ -143,6 +229,10 @@ def collect_stale(today: date) -> list:
             # consensus 是估值分母的来源却一直没被监控：整月 cron 失败时 snapshot 照常
             # 每日刷新（分子是新的），分母停在上个月，三类检查全部显示「新鲜」。
             check_file(DOCS_DATA_DIR / f"{key}-consensus.json", "fetched_at", CONSENSUS_MAX_DAYS, today),
+            # 按 cron 规则推算的停摆检查（比固定天数更贴合变动的抓取频率）
+            check_consensus_cadence(key, DOCS_DATA_DIR, today),
+            # 修正历史静默失败——不查的话 momentum 永远「数据不足」且无人知晓
+            check_history_keeps_up(key, DOCS_DATA_DIR),
         ):
             if r:
                 stale.append(r)

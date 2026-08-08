@@ -1004,6 +1004,26 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
 REVISION_FLAT_BAND_PCT = 2.0      # ±2% 内视为无修正（机构微调模型参数是常态）
 REVISION_LOOKBACK_DAYS = 90
 
+# 本脚本的 cron 规则（两条同名条目）：每月 1 日 + 4/5/8/9 月每周一。
+# 健康检查据此判断「本应跑几次」，而不是用固定天数阈值 —— 天数阈值要么在
+# 加密月初误报（4 月第一个周一可能是 4-06，此前最近一次抓取是 3-01，距今 31 天却正常），
+# 要么放过加密期的连续失败（40 天阈值恰好容得下 5 次周失败）。
+REPORTING_SEASON_MONTHS = (4, 5, 8, 9)
+
+
+def expected_runs_between(last_fetch: "date", today: "date") -> int:
+    """`last_fetch` 之后到 `today`（含）之间，按 cron 规则本应触发的次数。"""
+    from datetime import timedelta as _td
+    n = 0
+    d = last_fetch + _td(days=1)
+    while d <= today:
+        if d.day == 1:
+            n += 1
+        elif d.weekday() == 0 and d.month in REPORTING_SEASON_MONTHS:
+            n += 1
+        d += _td(days=1)
+    return n
+
 
 def build_history_observation(record: dict) -> dict:
     """把一次抓取压成一行观测。口径与页面/买点告警一致（截尾均值优先）。"""
@@ -1055,21 +1075,58 @@ def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> p
     return path
 
 
+def _momentum_for_metric(rows: list, lookback_days: int, metric: str) -> dict | None:
+    """对单一指标算窗口内最早 → 最新的变化；不可算返回 None。"""
+    if len(rows) < 2:
+        return None
+    rows = sorted(rows, key=lambda x: x[0])
+    to_date, to_val = rows[-1]
+    try:
+        cutoff = (datetime.strptime(to_date, "%Y-%m-%d")
+                  - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+    window = [r for r in rows if r[0] >= cutoff]
+    if len(window) < 2:
+        return None
+    from_date, from_val = window[0]
+    if from_val <= 0:      # 负基数（亏损标的）算不出有意义的百分比
+        return None
+    change = (to_val / from_val - 1) * 100
+    direction = ("flat" if abs(change) < REVISION_FLAT_BAND_PCT
+                 else ("up" if change > 0 else "down"))
+    span = (datetime.strptime(to_date, "%Y-%m-%d")
+            - datetime.strptime(from_date, "%Y-%m-%d")).days
+    return {"direction": direction, "change_pct": round(change, 1),
+            "from_date": from_date, "to_date": to_date, "span_days": span,
+            "metric": metric}
+
+
 def revision_momentum(snapshot_key: str, year: str, data_dir: pathlib.Path,
-                      lookback_days: int = REVISION_LOOKBACK_DAYS) -> dict:
+                      lookback_days: int = REVISION_LOOKBACK_DAYS,
+                      metric: str | None = None) -> dict:
     """窗口内最早观测 → 最新观测的预期变化。
 
     比较基准取**窗口内最早**而非上一次：周频抓取时「与上次比」几乎总是 flat，
     看不出趋势。只有一个观测点时返回 `insufficient` 而不是 0% ——
     0% 会被读成「预期稳定」，而事实是我们根本不知道。
+
+    `metric` 缺省先试净利、算不出再退营收（亏损标的 profit 为负算不出百分比，
+    但 revenue 是正的完全能算）。**返回值带 `metric` 字段**说明用的哪个口径，
+    否则读者会把营收修正误读成利润修正。
+
+    营收维度不是可选项：论证这个功能必要性的案例正是
+    「源杰跌 35% 但 2027E **营收**预期被下调 24%」——只算 profit 的话，
+    实现算不出自己的论据。
     """
     none_result = {"direction": "insufficient", "change_pct": None,
-                   "from_date": None, "to_date": None, "span_days": None}
+                   "from_date": None, "to_date": None, "span_days": None,
+                   "metric": None}
     path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
     if not path.exists():
         return none_result
 
-    rows = []
+    series: dict[str, list] = {"profit": [], "revenue": []}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -1078,33 +1135,18 @@ def revision_momentum(snapshot_key: str, year: str, data_dir: pathlib.Path,
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
-        v = ((r.get("years") or {}).get(year) or {}).get("profit")
-        if v and r.get("as_of"):
-            rows.append((r["as_of"], float(v)))
-    if len(rows) < 2:
-        return none_result
+        yv = (r.get("years") or {}).get(year) or {}
+        for m in ("profit", "revenue"):
+            v = yv.get(m)
+            if v is not None and r.get("as_of"):
+                series[m].append((r["as_of"], float(v)))
 
-    rows.sort(key=lambda x: x[0])
-    to_date, to_val = rows[-1]
-    try:
-        cutoff = (datetime.strptime(to_date, "%Y-%m-%d")
-                  - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-    except ValueError:
-        return none_result
-    window = [r for r in rows if r[0] >= cutoff]
-    if len(window) < 2:
-        return none_result
-
-    from_date, from_val = window[0]
-    if from_val <= 0:
-        return none_result
-    change = (to_val / from_val - 1) * 100
-    direction = ("flat" if abs(change) < REVISION_FLAT_BAND_PCT
-                 else ("up" if change > 0 else "down"))
-    span = (datetime.strptime(to_date, "%Y-%m-%d")
-            - datetime.strptime(from_date, "%Y-%m-%d")).days
-    return {"direction": direction, "change_pct": round(change, 1),
-            "from_date": from_date, "to_date": to_date, "span_days": span}
+    order = [metric] if metric else ["profit", "revenue"]
+    for m in order:
+        got = _momentum_for_metric(series.get(m) or [], lookback_days, m)
+        if got:
+            return got
+    return none_result
 
 
 def _fmt_yi(value: float | None) -> str:

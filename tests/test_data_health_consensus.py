@@ -164,6 +164,10 @@ class TestCollectWiresBothChecks:
         _write(tmp_path, "300308-snapshot.json",
                {"symbol": "300308", "as_of": "2026-08-07", "consensus_source": "auto"})
         _write(tmp_path, "300308-financials.json", {"updated_at": "2026-08-01"})
-        _write(tmp_path, "300308-consensus.json", {"fetched_at": "2026-08-01T08:45:00+08:00"})
+        # 8-03 是加密月的周一，取它才不会触发 check_consensus_cadence（8-01 起算会漏 2 次）
+        _write(tmp_path, "300308-consensus.json", {"fetched_at": "2026-08-03T08:45:00+08:00"})
+        # 2026-08-08 新增 check_history_keeps_up 后，「健康」的定义也包含历史跟得上
+        (tmp_path / "300308-consensus-history.jsonl").write_text(
+            json.dumps({"as_of": "2026-08-03", "years": {}}) + "\n", encoding="utf-8")
 
         assert rdh.collect_stale(TODAY) == []
