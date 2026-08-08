@@ -1004,22 +1004,25 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
 REVISION_FLAT_BAND_PCT = 2.0      # ±2% 内视为无修正（机构微调模型参数是常态）
 REVISION_LOOKBACK_DAYS = 90
 
-# 本脚本的 cron 规则（两条同名条目）：每月 1 日 + 4/5/8/9 月每周一。
-# 健康检查据此判断「本应跑几次」，而不是用固定天数阈值 —— 天数阈值要么在
-# 加密月初误报（4 月第一个周一可能是 4-06，此前最近一次抓取是 3-01，距今 31 天却正常），
-# 要么放过加密期的连续失败（40 天阈值恰好容得下 5 次周失败）。
-REPORTING_SEASON_MONTHS = (4, 5, 8, 9)
-
-
+# 本脚本的 cron 规则（2026-08-08 起）：**全年每周一**，单条 `45 0 * * 1`。
+#
+# 为什么是全年而不是只在财报季（4/5/8/9）——用户提出的理由比「财报季」更强：
+# **预期修正是事件驱动的**。旭创光模块被 FCC 调查这类突发消息一来，券商随即
+# 出报告改预期，这种事不挑月份。原设计在其余八个月一个月才看一眼，
+# 事件驱动的修正会被整月错过。
+#
+# 月度档（`45 0 1 * *`）同时删除：每周一已完全覆盖，留着还会在 1 日恰逢周一时
+# 重复触发（有 --lock 兜住，但那是多余的出错点）。
+#
+# 健康检查据此判断「本应跑几次」，而不是固定天数阈值 —— 天数阈值在频率变动时
+# 会双向失效：40 天容得下 5 次周失败，10 天又会在长假后误报。
 def expected_runs_between(last_fetch: "date", today: "date") -> int:
     """`last_fetch` 之后到 `today`（含）之间，按 cron 规则本应触发的次数。"""
     from datetime import timedelta as _td
     n = 0
     d = last_fetch + _td(days=1)
     while d <= today:
-        if d.day == 1:
-            n += 1
-        elif d.weekday() == 0 and d.month in REPORTING_SEASON_MONTHS:
+        if d.weekday() == 0:      # 周一
             n += 1
         d += _td(days=1)
     return n

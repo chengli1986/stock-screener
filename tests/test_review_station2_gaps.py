@@ -61,39 +61,40 @@ urc = _load("update_research_consensus", "update_research_consensus.py")
 
 
 class TestExpectedRunsBasedStaleness:
-    """cron 规则：每月 1 日 + 4/5/8/9 月每周一。"""
+    """cron 规则（2026-08-08 起）：**全年每周一**，单条 `45 0 * * 1`。
 
-    def test_counts_monthly_run(self):
-        """7-01 抓过，8-08 检查：8-01 月度档 + 8-03 周一（8 月是加密月）= 2 次。
+    改成全年的理由是用户提出的、比「财报季」更强的一条：**预期修正是事件驱动的**。
+    旭创光模块被 FCC 调查这类突发消息一来，券商随即出报告改预期——这种事不挑月份。
+    原设计只在 4/5/8/9 加密，其余八个月一个月才看一眼，事件驱动的修正会被整月错过。
 
-        （初版这条我写成 1，漏算了加密月的周一——实现是对的，期望值错了。）
+    月度档（`45 0 1 * *`）同时删除：每周一已完全覆盖它，留着还会在
+    1 日恰逢周一时重复触发（虽有 --lock 兜住，但那是多余的出错点）。
+    """
+
+    def test_counts_weekly_runs_all_year(self):
+        """7-01 → 8-08 共 5 个周一（7-06/13/20/27、8-03）。
+
+        旧规则下这里只算 2 次（8-01 月度 + 8-03 加密月周一），
+        七月整月的漏跑根本不会被发现。
         """
-        assert urc.expected_runs_between(date(2026, 7, 1), date(2026, 8, 8)) == 2
+        assert urc.expected_runs_between(date(2026, 7, 1), date(2026, 8, 8)) == 5
 
-    def test_counts_weekly_runs_in_reporting_season(self):
-        """8 月是加密月：8-03、8-10、8-17 三个周一 + 8-01 月度档 = 4 次。"""
-        assert urc.expected_runs_between(date(2026, 7, 31), date(2026, 8, 17)) == 4
+    def test_counts_weekly_runs_outside_former_reporting_season(self):
+        """★3 月（旧规则的非加密月）现在同样每周一跑：3-02/09/16/23/30 = 5 次。"""
+        assert urc.expected_runs_between(date(2026, 3, 1), date(2026, 4, 3)) == 5
 
-    def test_no_weekly_runs_outside_reporting_season(self):
-        """7 月不是加密月，只有 7-01 月度档一次。"""
-        assert urc.expected_runs_between(date(2026, 6, 30), date(2026, 7, 31)) == 1
+    def test_july_no_longer_a_blind_month(self):
+        """7 月旧规则只有月度档 1 次，现在是 4 次。"""
+        assert urc.expected_runs_between(date(2026, 6, 30), date(2026, 7, 31)) == 4
 
     def test_same_day_yields_zero(self):
         assert urc.expected_runs_between(date(2026, 8, 8), date(2026, 8, 8)) == 0
 
-    def test_month_start_boundary_is_not_a_false_alarm(self):
-        """★单纯用 10 天阈值会误报的那个场景：4 月第一个周一是 4-06，
-        在此之前最近一次抓取是 3-01（月频档），距今 31 天——但本应触发的
-        只有 4-01 一次，属正常，不该告警。"""
-        n = urc.expected_runs_between(date(2026, 3, 1), date(2026, 4, 3))
+    def test_one_week_gap_is_a_single_run(self):
+        assert urc.expected_runs_between(date(2026, 8, 3), date(2026, 8, 11)) == 1
 
-        assert n == 1   # 仅 4-01；4-06 那个周一还没到
-
-    def test_five_missed_weekly_runs_is_an_anomaly(self):
-        """加密期连续失败 5 次 —— 旧的 40 天阈值恰好放过它。"""
-        n = urc.expected_runs_between(date(2026, 8, 3), date(2026, 9, 7))
-
-        assert n >= 5
+    def test_two_missed_mondays(self):
+        assert urc.expected_runs_between(date(2026, 8, 3), date(2026, 8, 18)) == 2
 
 
 class TestHealthUsesExpectedRuns:
