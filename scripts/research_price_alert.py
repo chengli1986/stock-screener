@@ -63,7 +63,13 @@ COOLDOWN_DAYS = 7
 DRAWDOWN_MIN_PCT = 25.0      # ①a 距 52 周高回撤门槛
 PEAK_MAX_AGE_DAYS = 120      # ①b 高点时效：近期急跌 vs 长期阴跌（用户提出）
 PEG_MAX = 1.0                # ③ 增速须撑得住估值
-HORIZON = ("2026E", "2027E")  # 预测视界：一年半（用户判断，2028E 太远）
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+from _horizon import horizon_years  # noqa: E402
+
+# 预测视界：当前年+次年，按日历滚动（用户判断「28 年太遥远，一年半够了」）。
+# 曾在四处各写死一份 ("2026E","2027E")，2027 年一到全会错。
+HORIZON = horizon_years()
 
 
 def _denominator(consensus: dict, year: str):

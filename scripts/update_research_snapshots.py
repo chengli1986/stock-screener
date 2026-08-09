@@ -83,6 +83,10 @@ DEPLOY_DATA_DIR = pathlib.Path("/var/www/overview/data")
 
 BJT = timezone(timedelta(hours=8))
 
+# 预测视界的单一定义（当前年+次年，按日历滚动）——见 scripts/_horizon.py
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _horizon import in_horizon  # noqa: E402
+
 # ── East Money push2delay ──────────────────────────────────────────────────────
 # push2delay 而非 push2：push2 海外边缘节点 2026-06-02 起对本 EC2 返回 502；
 # push2delay 字段与 push2 逐字节一致（已对照国内 IP 验证），且未封海外。
@@ -765,6 +769,11 @@ def build_snapshot(stock: dict) -> dict:
     pe_estimates: dict[str, float] = {}
     ps_estimates: dict[str, float] = {}
     for label, entry in consensus.items():
+        # 只算**视界内**的倍数（当前年+次年）。用户 2026-08-09：
+        # 「一致预期看到 2027 年底就够了，2028 年有点遥远」。
+        # 此前 snapshot 照单全收，长鑫/茅台都算出了 2028E 倍数并落盘。
+        if not in_horizon(label):
+            continue
         if valuation_mode in ("ps", "both") and "revenue_yuan" in entry:
             ps_estimates[label] = round(valuation_cap / entry["revenue_yuan"], 1)
         if valuation_mode in ("pe", "both") and "profit_yuan" in entry:

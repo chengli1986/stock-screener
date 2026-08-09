@@ -33,6 +33,11 @@ import requests
 
 BJT = timezone(timedelta(hours=8))
 
+# 预测视界的单一定义（当前年+次年，按日历滚动）。此前在本文件写死过两处、
+# price_alert 一处、页面 JS 一处，四份各写各的——2027 年一到全会错。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _horizon import horizon_years  # noqa: E402
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY = REPO_ROOT / "config" / "research_stocks.json"
 DOCS_DATA = pathlib.Path.home() / "docs-site" / "data"
@@ -933,6 +938,8 @@ def build_record(
         "name": stock["name"],
         "source": source,
         "fetched_at": fetched_at,
+        # 视界随数据一起落盘 —— 页面读它而不是自己写死一份（单一真相源）
+        "horizon": list(horizon_years()),
         "estimates": estimates,
         "deltas_vs_registry": compare_with_registry(stock, parsed),
     }
@@ -1200,7 +1207,7 @@ def build_transition_alert_html(transitions: list, fetched_at: str) -> str | Non
     # 视界内/外分组：用户 2026-08-05 定「2028E 太远，看一年半够了」。
     # 视界外的背离仍是数据质量信号（值得记录），但混在一起会让读者第一反应是
     # 「2028 我不看」，从而连视界内的一起忽略。故单独分组并标注。
-    HORIZON = ("2026E", "2027E")
+    HORIZON = horizon_years()
     worsened = [t for t in transitions
                 if t["kind"] in ("worsened", "first_seen") and t["year"] in HORIZON]
     beyond = [t for t in transitions
@@ -1552,7 +1559,7 @@ def main() -> int:
         html = build_transition_alert_html(transitions_all, fetched_at)
         if html:
             n_bad = sum(1 for t in transitions_all
-                        if t["kind"] != "recovered" and t["year"] in ("2026E", "2027E"))
+                        if t["kind"] != "recovered" and t["year"] in horizon_years())
             subj = (f"[一致预期] 视界内新出现 {n_bad} 项"
                     f"（共 {len(transitions_all)} 项变化）— {fetched_at[:10]}")
             try:
