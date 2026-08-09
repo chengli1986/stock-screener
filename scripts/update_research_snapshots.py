@@ -373,7 +373,7 @@ def compute_technicals(rows: list, symbol: str = "", today=None) -> dict:
 
 
 def load_consensus_estimates(snapshot_key: str, data_dir: pathlib.Path | None = None) -> dict:
-    """读 `{key}-consensus.json` 的 estimates。文件缺失/损坏一律返回 {} 交由兜底。"""
+    """读 `{key}-consensus.json` 的 estimates。文件缺失/损坏一律返回 {}（=分母缺失）。"""
     base = data_dir if data_dir is not None else DATA_DIR
     f = pathlib.Path(base) / f"{snapshot_key}-consensus.json"
     if not f.exists():
@@ -385,9 +385,15 @@ def load_consensus_estimates(snapshot_key: str, data_dir: pathlib.Path | None = 
 
 
 def resolve_consensus(stock: dict, data_dir: pathlib.Path | None = None) -> tuple[dict, str]:
-    """返回 `(estimates, source)`，source ∈ {"auto", "registry"}。
+    """返回 `(estimates, source)`，source ∈ {"auto", "missing"}。
 
-    自动源为空（抓取失败留下的空壳）时回落注册表——**不能让空文件把估值分母清空**。
+    ★2026-08-09 用户定：**删除注册表兜底**。原先抓取失败会回落到
+    `research_stocks.json` 里的人工冻结值，而那些值自登记日起从未更新
+    （旭创记 480 亿 vs 实际 548 亿，差 14%）——于是一次失败的抓取既不报错也不留白，
+    而是**平静地渲染出一个错误的 PE**。宁可不显示，也不显示错的。
+
+    现在失败即 `missing`：估值分母为空，页面不渲染倍数，
+    health-check 据此告警（见 research_data_health.check_consensus_source）。
     """
     auto = load_consensus_estimates(stock.get("snapshot_key", ""), data_dir)
     # 自动源同时含实际年份（'2025A' 等，来自同花顺详细指标表的「实际值」列）与预测年份。
@@ -395,7 +401,7 @@ def resolve_consensus(stock: dict, data_dir: pathlib.Path | None = None) -> tupl
     forecast = {y: v for y, v in auto.items() if str(y).endswith("E")}
     if forecast:
         return forecast, "auto"
-    return stock.get("consensus") or {}, "registry"
+    return {}, "missing"
 
 
 # ── 币种换算（港股）────────────────────────────────────────────────────────────

@@ -143,41 +143,6 @@ def parse_ths_dispersion(columns: list[str], rows: list[list[str]]) -> dict[str,
     return out
 
 
-def compare_with_registry(stock: dict, parsed: dict[str, dict[str, float]]) -> list[dict]:
-    """把最新一致预期与注册表冻结值逐项对比。
-
-    只对比注册表**已登记**的字段——PS 模式的股票注册表里只有营收,不该凭空生成
-    净利对比行。上游缺该期预测时 `latest`/`delta_pct` 均为 None(区别于 0%)。
-    """
-    field_map = {"profit_yuan": "profit", "revenue_yuan": "revenue"}
-    deltas: list[dict] = []
-    for year, frozen_fields in sorted(stock.get("consensus", {}).items()):
-        for reg_field, parsed_field in field_map.items():
-            frozen = frozen_fields.get(reg_field)
-            if frozen is None:
-                continue
-            latest = parsed.get(year, {}).get(parsed_field)
-            delta_pct = round((latest / frozen - 1) * 100, 2) if (latest is not None and frozen) else None
-            deltas.append(
-                {
-                    "year": year,
-                    "field": parsed_field,
-                    "frozen": frozen,
-                    "latest": latest,
-                    "delta_pct": delta_pct,
-                }
-            )
-    return deltas
-
-
-def significant_changes(deltas: list[dict], threshold_pct: float = DEFAULT_THRESHOLD_PCT) -> list[dict]:
-    """筛出绝对变动 ≥ 门槛的项。下修与上调同等重要,故只看绝对值。"""
-    return [
-        d for d in deltas
-        if d.get("delta_pct") is not None and abs(d["delta_pct"]) >= threshold_pct
-    ]
-
-
 # ── 第三方交叉复核（东方财富 F10，独立于同花顺）────────────────────────────────
 #
 # 单一数据源无从判断对错，人工 Wind 复核不可持续。东财 F10 ProfitForecast 与同花顺
@@ -335,8 +300,11 @@ def cross_check_summary(checks: dict) -> dict[str, int]:
     return tally
 
 
-# 中位数最小样本量：低于此值不给中位数（长鑫 2 家 / 长光华芯 3 家覆盖，算了也是假精度）
-MIN_MEDIAN_SAMPLES: int = 5
+# 2026-08-09 用户定：**不设薄覆盖阈值**——「有些公司覆盖券商比较少」，
+# 券商少是这些公司的真实状态，不是数据缺陷，不该被当成异常标红。
+# 原先 MIN_MEDIAN_SAMPLES=5：低于此值不给中位数、并置 insufficient_samples。
+# 现在中位数照算（2 个样本的中位数就等于均值，无害），家数如实显示为中性事实，
+# 由读者自己判断 4 家和 46 家的分量——与「研究助手不是信号源」一致。
 
 
 def parse_em_broker_estimates(ycmx: list[dict] | None) -> dict[str, list[float]]:
@@ -358,14 +326,11 @@ def parse_em_broker_estimates(ycmx: list[dict] | None) -> dict[str, list[float]]
     return out
 
 
-def broker_stats(per_year: dict[str, list[float]],
-                 min_samples: int = MIN_MEDIAN_SAMPLES) -> dict[str, dict]:
+def broker_stats(per_year: dict[str, list[float]]) -> dict[str, dict]:
     """逐家预测 → 中位数/均值/极值/样本数。
 
-    **样本不足时不给中位数** —— 长鑫仅 2 家、长光华芯 3 家覆盖，
-    对这类标的算中位数是假精度。留 None 并置 `insufficient_samples`，
-    与 cross_check 里 UNVERIFIED 的处理哲学一致：说不知道，好过给个看起来很准的数。
-    min/max 即便样本少也仍是真信息，照常给出。
+    不再按样本量截断（用户 2026-08-09 定，见上方注释）：家数少是真实状态，
+    如实给出统计量与 `count`，让读者自己判断，不替他标红。
     """
     out: dict[str, dict] = {}
     for year, values in sorted((per_year or {}).items()):
@@ -373,16 +338,14 @@ def broker_stats(per_year: dict[str, list[float]],
         if not vals:
             continue
         n = len(vals)
-        enough = n >= min_samples
         mid = n // 2
-        median = (vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2) if enough else None
+        median = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
         out[year] = {
             "median": _round_yuan(median),
             "mean": _round_yuan(sum(vals) / n),
             "min": _round_yuan(vals[0]),
             "max": _round_yuan(vals[-1]),
             "count": n,
-            "insufficient_samples": not enough,
         }
     return out
 
@@ -726,16 +689,12 @@ def merge_coverage_orgs(record: dict) -> dict:
             bs["coverage_min"] = est["profit_min_yuan"]
         if est.get("profit_max_yuan") is not None:
             bs["coverage_max"] = est["profit_max_yuan"]
-        eff = bs.get("coverage_orgs")
-        if eff is not None:
-            bs["insufficient_samples"] = eff < MIN_MEDIAN_SAMPLES
     return record
 
 
 def robust_stats(per_year: dict[str, list[dict]], today=None,
                  half_life_days: int = RECENCY_HALF_LIFE_DAYS,
-                 k: float = MAD_OUTLIER_K,
-                 min_samples: int = MIN_MEDIAN_SAMPLES) -> dict[str, dict]:
+                 k: float = MAD_OUTLIER_K) -> dict[str, dict]:
     """逐家预测记录 → 稳健统计量。
 
     在既有 median/mean/min/max 之上增加：
@@ -755,19 +714,15 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
         wsum = sum(weights)
 
         n = len(values)
-        enough = n >= min_samples
         svals = sorted(values)
         mid = n // 2
-        median = (svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2) if enough else None
+        median = svals[mid] if n % 2 else (svals[mid - 1] + svals[mid]) / 2
 
-        # 薄覆盖时显式回退到简单算术平均：2-3 家覆盖下中位数/加权/离群检测全无意义，
-        # 与其让下游猜该用哪个统计量，不如直接把结论和理由一起落盘。
+        # 不再按样本量切换统计量（用户 2026-08-09 定不设薄覆盖阈值）。
+        # 截尾对 2-3 个样本本就退化成算术均值，无需特判；下游拿到的口径始终一致。
         simple_mean = sum(values) / n
         trimmed = trimmed_mean(values)
-        if enough:
-            preferred_stat, preferred_value, preferred_reason = "trimmed_mean", trimmed, "robust"
-        else:
-            preferred_stat, preferred_value, preferred_reason = "mean", simple_mean, "thin_coverage"
+        preferred_stat, preferred_value, preferred_reason = "trimmed_mean", trimmed, "robust"
 
         flags = flag_outliers(values, k)
         mad = median_abs_deviation(values) if n >= 3 else 0.0
@@ -796,7 +751,6 @@ def robust_stats(per_year: dict[str, list[dict]], today=None,
             "min": _round_yuan(svals[0]),
             "max": _round_yuan(svals[-1]),
             "count": n,
-            "insufficient_samples": not enough,
             "mad": _round_yuan(mad) if n >= 3 else None,
             "outliers": outliers,
             "oldest_age_days": max(known_ages) if known_ages else None,
@@ -941,7 +895,6 @@ def build_record(
         # 视界随数据一起落盘 —— 页面读它而不是自己写死一份（单一真相源）
         "horizon": list(horizon_years()),
         "estimates": estimates,
-        "deltas_vs_registry": compare_with_registry(stock, parsed),
     }
 
 
@@ -1466,7 +1419,6 @@ def main() -> int:
 
     fetched_at = datetime.now(BJT).isoformat(timespec="seconds")
     errors: list[str] = []
-    flagged_all: list[tuple[str, dict]] = []
     divergent_all: list[tuple] = []
     transitions_all: list[dict] = []
     skipped_hk: list[str] = []
@@ -1489,10 +1441,6 @@ def main() -> int:
                     "source": "yfinance",
                     "fetched_at": fetched_at,
                     "estimates": est,
-                    "deltas_vs_registry": compare_with_registry(
-                        stock,
-                        {y: {"revenue": v.get("revenue_yuan")} for y, v in est.items()},
-                    ),
                     "cross_check": cross_check(
                         {y: {"revenue_yuan": v.get("revenue_yuan")} for y, v in est.items()},
                         {}, args.threshold,
@@ -1529,8 +1477,6 @@ def main() -> int:
 
                 if not args.dry_run:
                     write_and_deploy(stock["snapshot_key"], record)
-                flagged = significant_changes(record["deltas_vs_registry"], args.threshold)
-                flagged_all.extend((name, d) for d in flagged)
                 bs0 = (record.get("broker_stats") or {}).get(next(iter(est), ""), {})
                 e0 = next(iter(est.values()), {})
                 print(
@@ -1539,7 +1485,6 @@ def main() -> int:
                     f"  机构{e0.get('revenue_orgs') or '—'}家"
                     f"  币种{yf_data.get('financial_currency')}"
                     f"  逐家{bs0.get('count') or '—'}家(经济通)"
-                    f"{'  ⚠' + str(len(flagged)) + '项显著变动' if flagged else ''}"
                 )
             except Exception as e:
                 msg = f"[{symbol}] {name} FAILED(yfinance): {type(e).__name__}: {e}"
@@ -1592,8 +1537,6 @@ def main() -> int:
             if not args.dry_run:
                 write_and_deploy(stock["snapshot_key"], record)
 
-            flagged = significant_changes(record["deltas_vs_registry"], args.threshold)
-            flagged_all.extend((name, d) for d in flagged)
             for year, fields in record["cross_check"].items():
                 for fname, item in fields.items():
                     if item["verdict"] == "DIVERGENT":
@@ -1606,7 +1549,6 @@ def main() -> int:
             print(
                 f"  [{symbol}] ✓ {name}  2026E 营收{_fmt_yi(e26.get('revenue_yuan'))} "
                 f"净利{_fmt_yi(e26.get('profit_yuan'))}  机构{orgs if orgs else '—'}家{xc}"
-                f"{'  ⚠' + str(len(flagged)) + '项显著变动' if flagged else ''}"
             )
         except Exception as e:
             msg = f"[{symbol}] {name} FAILED: {type(e).__name__}: {e}"
@@ -1623,15 +1565,6 @@ def main() -> int:
             label = "净利" if fname == "profit" else "营收"
             print(f"  {name} {year} {label}: 同花顺 {_fmt_yi(it['primary'])} / "
                   f"东财 {_fmt_yi(it['secondary'])}  ({it['diff_pct']:+.1f}%)")
-
-    if flagged_all:
-        print(f"\n=== 显著变动(|Δ| ≥ {args.threshold}%),需人工复核后同步注册表 ===")
-        for name, d in flagged_all:
-            label = "净利" if d["field"] == "profit" else "营收"
-            print(
-                f"  {name} {d['year']} {label}: {_fmt_yi(d['frozen'])} → "
-                f"{_fmt_yi(d['latest'])}  ({d['delta_pct']:+.1f}%)"
-            )
 
     # 告警改为**状态变化驱动**（2026-08-09）：持续存在的分歧不重复打扰，
     # 否则长鑫那种「就是只有 4 家覆盖」的标的会每周发同一封，两周后就被无视。
@@ -1662,7 +1595,7 @@ def main() -> int:
             print(f"  {msg}", file=sys.stderr)
         return 1
 
-    print(f"\n=== done ({len(stocks) - len(skipped_hk)} stocks, {len(flagged_all)} flagged) ===")
+    print(f"\n=== done ({len(stocks) - len(skipped_hk)} stocks) ===")
     return 0
 
 

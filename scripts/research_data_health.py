@@ -104,12 +104,14 @@ def check_file(path: pathlib.Path, date_field: str, max_days: int, today: date):
 
 
 def check_consensus_source(stocks: list, data_dir: pathlib.Path, today: date) -> list:
-    """估值分母是否已回落到注册表兜底值。
+    """估值分母是否缺失。
 
-    ★这是本脚本原本抓不到的一类失败：抓取失败时页面**不空、不报错**，而是平静地
-    显示一个用登记日旧预期算出的 PE/PS（旭创注册表写 480 亿、实际 548 亿，差 14%）。
-    `consensus_source` 字段记下了，但没人会去看。在「读研报下投资判断」的用法下，
-    静默的错数字比明显的空值危险得多。
+    ★这是本脚本原本抓不到的一类失败。**2026-08-09 之前**：抓取失败会回落到
+    注册表冻结值，页面不空不报错，平静地显示一个用登记日旧预期算出的 PE/PS
+    （旭创注册表写 480 亿、实际 548 亿，差 14%）——静默的错数字比明显的空值危险得多。
+    **之后**：用户拍板删掉兜底，失败即 `consensus_source="missing"`，页面不渲染倍数。
+    危害从「显示错数」变成「少显示一块」，但仍必须告警——
+    否则页面会安静地缺一块，同样没人知道。
 
     文件缺失不在这里报 —— 已由 `check_file` 报「文件缺失」，不重复。
     """
@@ -129,8 +131,8 @@ def check_consensus_source(stocks: list, data_dir: pathlib.Path, today: date) ->
         detail = "字段缺失" if src is None else f"consensus_source={src}"
         out.append({
             "file": path.name,
-            "issue": (f"估值分母回落到注册表兜底值（{detail}）——该值自登记日起从未更新，"
-                      f"页面正在显示可能过时的 PE/PS，请检查 research-consensus cron"),
+            "issue": (f"估值分母缺失（{detail}）——注册表兜底已于 2026-08-09 删除，"
+                      f"页面将不显示 PE/PS，请检查 research-consensus cron"),
         })
     return out
 

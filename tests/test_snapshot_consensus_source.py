@@ -18,6 +18,14 @@
 注册表当「人工权威口径」的原意是「自动抓取需要人工把关」，
 但把关已由双源交叉复核 + 中位数 + 离群标记 + 背离告警自动化，
 再留一道人工闸门只会制造化石。
+
+## 后续：兜底整个删掉（2026-08-09，用户拍板）
+
+降为兜底之后问题只解决了一半：**一次失败的抓取既不报错也不留白，而是平静地
+渲染出一个用登记日旧预期算出的错 PE**（旭创注册表记 480 亿 vs 实际 548 亿，差 14%）。
+在「读研报下投资判断」的用法下，静默的错数字比明显的空值危险得多。
+用户拍板：**宁可不显示，也不显示错的**。失败即 `source="missing"`、分母为空、
+页面不渲染倍数，由 data-health 告警。本文件下半部分即这条新契约的定义。
 """
 
 import importlib.util
@@ -34,14 +42,16 @@ sys.modules["update_research_snapshots"] = urs
 _spec.loader.exec_module(urs)
 
 
-_REGISTRY_STOCK = {
+# 2026-08-09 起注册表不再带 consensus 块——留着也不会被读，留着反而会让人
+# 以为兜底还在。这里保留一个**带冻结值的**副本，专门用于断言「即使有，也不许用」。
+_STOCK = {
     "symbol": "688256", "exchange": "SH", "name": "寒武纪", "snapshot_key": "688256",
     "valuation_mode": "pe",
-    "consensus": {   # 冻结值：2026-05-06 注册以来未动
-        "2026E": {"label": "2026E", "profit_yuan": 4_500_000_000},
-        "2027E": {"label": "2027E", "profit_yuan": 7_500_000_000},
-    },
 }
+_STOCK_WITH_STALE_REGISTRY = dict(_STOCK, consensus={
+    "2026E": {"label": "2026E", "profit_yuan": 4_500_000_000},
+    "2027E": {"label": "2027E", "profit_yuan": 7_500_000_000},
+})
 
 _AUTO_CONSENSUS = {
     "symbol": "688256", "name": "寒武纪", "source": "ths",
@@ -80,48 +90,57 @@ def test_returns_empty_on_corrupt_file(tmp_path):
     assert urs.load_consensus_estimates("688256", data_dir=tmp_path) == {}
 
 
-# ── resolve_consensus：自动优先，注册表兜底 ──────────────────────────────────
+# ── resolve_consensus：只认自动源，失败即 missing ────────────────────────────
 
 
-def test_prefers_auto_consensus_over_registry(tmp_path):
+def test_uses_auto_consensus(tmp_path):
     _write(tmp_path, _AUTO_CONSENSUS)
 
-    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+    est, source = urs.resolve_consensus(_STOCK, data_dir=tmp_path)
 
     assert source == "auto"
-    assert est["2027E"]["profit_yuan"] == 11_420_000_000, "仍在用注册表冻结值"
+    assert est["2027E"]["profit_yuan"] == 11_420_000_000
 
 
 def test_auto_consensus_brings_extra_forecast_years(tmp_path):
     """自动源多给的 2028E 应保留 —— 注册表只有两年。"""
     _write(tmp_path, _AUTO_CONSENSUS)
 
-    est, _ = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+    est, _ = urs.resolve_consensus(_STOCK, data_dir=tmp_path)
 
     assert "2028E" in est
 
 
-def test_falls_back_to_registry_when_no_auto_file(tmp_path):
-    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+def test_missing_auto_file_yields_missing_not_registry(tmp_path):
+    """★核心契约：抓不到就是抓不到，不许拿注册表冻结值顶上。"""
+    est, source = urs.resolve_consensus(_STOCK, data_dir=tmp_path)
 
-    assert source == "registry"
-    assert est["2027E"]["profit_yuan"] == 7_500_000_000
+    assert source == "missing"
+    assert est == {}
 
 
-def test_falls_back_when_auto_file_has_no_estimates(tmp_path):
-    """抓取失败留下的空壳文件不能把估值分母清空。"""
+def test_stale_registry_block_is_ignored_even_if_present(tmp_path):
+    """★即便注册表里还留着冻结值（旧配置没清干净），也绝不能用。"""
+    est, source = urs.resolve_consensus(_STOCK_WITH_STALE_REGISTRY, data_dir=tmp_path)
+
+    assert source == "missing"
+    assert est == {}
+
+
+def test_empty_auto_file_yields_missing(tmp_path):
+    """抓取失败留下的空壳文件 —— 分母为空，页面不渲染倍数。"""
     _write(tmp_path, {"symbol": "688256", "estimates": {}})
 
-    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+    est, source = urs.resolve_consensus(_STOCK_WITH_STALE_REGISTRY, data_dir=tmp_path)
 
-    assert source == "registry"
-    assert est["2026E"]["profit_yuan"] == 4_500_000_000
+    assert source == "missing"
+    assert est == {}
 
 
-def test_registry_without_consensus_yields_empty(tmp_path):
+def test_stock_without_any_consensus_yields_missing(tmp_path):
     est, source = urs.resolve_consensus({"snapshot_key": "x"}, data_dir=tmp_path)
 
-    assert est == {} and source == "registry"
+    assert est == {} and source == "missing"
 
 
 # ── build_snapshot 集成 ──────────────────────────────────────────────────────
@@ -140,7 +159,7 @@ class TestSnapshotUsesAutoConsensus:
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
              mock.patch.object(urs, "DATA_DIR", tmp_path):
-            return urs.build_snapshot(_REGISTRY_STOCK)
+            return urs.build_snapshot(_STOCK_WITH_STALE_REGISTRY)
 
     def test_pe_computed_from_auto_consensus(self, tmp_path):
         """6786 亿 / 114.2 亿 = 59.4x（而非用冻结值算出的 90.5x）。"""
@@ -156,14 +175,15 @@ class TestSnapshotUsesAutoConsensus:
 
         assert self._build(tmp_path)["consensus_source"] == "auto"
 
-    def test_snapshot_marks_registry_fallback(self, tmp_path):
-        assert self._build(tmp_path)["consensus_source"] == "registry"
+    def test_snapshot_marks_missing_when_fetch_failed(self, tmp_path):
+        assert self._build(tmp_path)["consensus_source"] == "missing"
 
-    def test_registry_fallback_keeps_old_behaviour(self, tmp_path):
-        """兜底路径必须与改动前逐位一致：6786 亿 / 75 亿 = 90.5x。"""
+    def test_no_multiples_rendered_when_consensus_missing(self, tmp_path):
+        """★改动前这里会渲染出 90.5x（用注册表冻结值算的）。现在必须留空——
+        页面宁可缺一块，也不能显示一个看起来很正常的错数字。"""
         snap = self._build(tmp_path)
 
-        assert snap["pe_estimates"]["2027E"] == pytest.approx(90.5, abs=0.3)
+        assert snap["pe_estimates"] == {}
 
 
 # ── 只对预测年份算估值倍数 ────────────────────────────────────────────────────
@@ -184,19 +204,19 @@ def test_resolve_consensus_drops_actual_years(tmp_path):
         },
     })
 
-    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+    est, source = urs.resolve_consensus(_STOCK, data_dir=tmp_path)
 
     assert source == "auto"
     assert sorted(est) == ["2026E", "2027E"], "实际年份未被剔除"
 
 
-def test_resolve_consensus_falls_back_when_only_actual_years(tmp_path):
-    """只有实际值、没有任何预测 —— 等同于没抓到，应回落注册表。"""
+def test_only_actual_years_counts_as_missing(tmp_path):
+    """只有实际值、没有任何预测 —— 等同于没抓到。"""
     _write(tmp_path, {"symbol": "688256", "estimates": {"2025A": {"profit_yuan": 2e9}}})
 
-    est, source = urs.resolve_consensus(_REGISTRY_STOCK, data_dir=tmp_path)
+    est, source = urs.resolve_consensus(_STOCK_WITH_STALE_REGISTRY, data_dir=tmp_path)
 
-    assert source == "registry"
+    assert source == "missing" and est == {}
 
 
 def test_snapshot_has_no_actual_year_multiples(tmp_path):
@@ -217,6 +237,6 @@ def test_snapshot_has_no_actual_year_multiples(tmp_path):
     with mock.patch.object(urs, "fetch_quote_data", return_value=q), \
          mock.patch.object(urs, "fetch_ohlcv_data", return_value=o), \
          mock.patch.object(urs, "DATA_DIR", tmp_path):
-        snap = urs.build_snapshot(_REGISTRY_STOCK)
+        snap = urs.build_snapshot(_STOCK_WITH_STALE_REGISTRY)
 
     assert list(snap["pe_estimates"]) == ["2026E"]

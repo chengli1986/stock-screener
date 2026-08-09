@@ -25,12 +25,11 @@
 少了一家更悲观的。茅台宁德恰好一致，是因为东财那 31/27 家里已含极值机构——
 **这种「恰好对上」最危险，它让 bug 在大盘股上完全隐形**。
 
-## 为什么连薄覆盖判断也要改
+## 后续（2026-08-09 同日）
 
-当前 `insufficient_samples = count < 5`。实测三只薄覆盖标的（长光 3/3、风华 3/3、
-长鑫 4/2）**结论恰好都不变**，但逻辑仍是错的：一旦出现 orgs=8 而 count=4，
-就会把覆盖充分的标的误判为样本不足，并连带触发买点告警的可信度门禁。
-不能因为「现在恰好没错」就留着。
+原先这里还有个 `insufficient_samples = count < 5` 的薄覆盖判断，本次一并连坐修正。
+当天稍晚用户拍板**不设薄覆盖阈值**——「有些公司覆盖券商比较少」，那是这些公司的
+真实状态不是数据缺陷——于是该标记整个删除，家数只作为中性事实显示。
 """
 
 import importlib.util
@@ -50,8 +49,7 @@ def _record(orgs=46, count=31, lo=8.13e10, hi=9.75e10):
     return {
         "estimates": {"2026E": {"profit_yuan": 8.6e10, "orgs": orgs,
                                 "profit_min_yuan": lo, "profit_max_yuan": hi}},
-        "broker_stats": {"2026E": {"count": count, "min": 8.13e10, "max": 9.75e10,
-                                   "insufficient_samples": count < 5}},
+        "broker_stats": {"2026E": {"count": count, "min": 8.13e10, "max": 9.75e10}},
     }
 
 
@@ -68,19 +66,14 @@ class TestMergeCoverageOrgs:
 
         assert r["broker_stats"]["2026E"]["count"] == 31
 
-    def test_thin_coverage_judged_by_coverage_not_detail(self):
-        """★核心：orgs=8 覆盖充分，但只有 4 条明细——不该判样本不足。
-        当前实测数据里没有这种组合，但逻辑必须对，否则一旦出现就会误判，
-        并连带触发买点告警的可信度门禁。"""
-        r = urc.merge_coverage_orgs(_record(orgs=8, count=4))
-
-        assert r["broker_stats"]["2026E"]["insufficient_samples"] is False
-
-    def test_genuinely_thin_still_flagged(self):
-        """长鑫：覆盖 4 家（<5），仍然是真薄覆盖。"""
+    def test_no_longer_emits_a_thin_coverage_flag(self):
+        """★2026-08-09 用户定不设薄覆盖阈值：「有些公司覆盖券商比较少」，
+        那是真实状态不是缺陷。家数照常合并进 coverage_orgs 供显示，
+        但不再据此打 insufficient_samples 标记。"""
         r = urc.merge_coverage_orgs(_record(orgs=4, count=2))
 
-        assert r["broker_stats"]["2026E"]["insufficient_samples"] is True
+        assert r["broker_stats"]["2026E"]["coverage_orgs"] == 4
+        assert "insufficient_samples" not in r["broker_stats"]["2026E"]
 
     def test_falls_back_to_count_when_orgs_absent(self):
         """智谱走 yfinance/ETNet，没有同花顺的 orgs —— 退回明细条数，不能崩。"""
@@ -90,7 +83,6 @@ class TestMergeCoverageOrgs:
         r = urc.merge_coverage_orgs(rec)
 
         assert r["broker_stats"]["2026E"]["coverage_orgs"] == 13
-        assert r["broker_stats"]["2026E"]["insufficient_samples"] is False
 
     def test_wider_range_from_ths_is_carried(self):
         """★长鑫实测：同花顺 1,244~1,518 亿（4 家），东财明细只有 1,449~1,518（2 家）。
@@ -127,7 +119,7 @@ class TestWiredIntoBuildRecord:
         dispersion = {"2026": {"orgs": 46, "min": 8.13e10, "max": 9.75e10, "spread_ratio": 1.2}}
         rec = urc.build_record({"symbol": "600519", "name": "贵州茅台"},
                                parsed, dispersion, "2026-08-09T08:45:00+08:00")
-        rec["broker_stats"] = {"2026E": {"count": 31, "insufficient_samples": False}}
+        rec["broker_stats"] = {"2026E": {"count": 31}}
         rec = urc.merge_coverage_orgs(rec)
 
         assert rec["broker_stats"]["2026E"]["coverage_orgs"] == 46
@@ -143,7 +135,7 @@ def test_write_and_deploy_merges_coverage(tmp_path, monkeypatch):
            "fetched_at": "2026-08-09T08:45:00+08:00",
            "estimates": {"2026E": {"profit_yuan": 8.6e10, "orgs": 46,
                                    "profit_min_yuan": 8.13e10, "profit_max_yuan": 9.75e10}},
-           "broker_stats": {"2026E": {"count": 31, "insufficient_samples": False}}}
+           "broker_stats": {"2026E": {"count": 31}}}
     urc.write_and_deploy("600519", rec)
 
     on_disk = _json.loads((tmp_path / "600519-consensus.json").read_text())

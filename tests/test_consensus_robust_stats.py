@@ -105,7 +105,7 @@ def test_robust_stats_weighted_mean_favours_recent():
     """两个预测，新的那个应把加权均值拉向自己。"""
     recs = _recs([(100.0, "2026-08-01"), (200.0, "2025-08-01")])
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=2)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["mean"] == pytest.approx(150.0)
     assert out["weighted_mean"] < 150.0, "加权均值未向新预测靠拢"
@@ -116,7 +116,7 @@ def test_robust_stats_reports_outlier_details():
     recs = _recs([(81.0, "2026-07-01"), (84.0, "2026-07-01"), (86.0, "2026-07-01"),
                   (87.0, "2026-07-01"), (88.0, "2026-07-01"), (128.0, "2026-07-01")])
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert len(out["outliers"]) == 1
     assert out["outliers"][0]["value"] == 128.0
@@ -127,19 +127,20 @@ def test_robust_stats_reports_staleness():
     """最老一份的年龄是判断这组预期还能不能用的关键。"""
     recs = _recs([(100.0, "2026-08-01"), (110.0, "2026-04-02")])
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=2)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["oldest_age_days"] == 124
     assert out["newest_age_days"] == 3
 
 
-def test_robust_stats_withholds_median_below_min_samples():
-    """沿用既有约定：样本不足不给中位数，但极值与加权均值仍给。"""
+def test_robust_stats_gives_median_even_for_a_single_record():
+    """★2026-08-09 用户定不设薄覆盖阈值：单条记录的中位数就是它自己，
+    如实给出即可；原先留 None 并置 insufficient_samples 的分支已删。"""
     out = urc.robust_stats({"2026E": _recs([(100.0, "2026-08-01")])},
-                           today=TODAY, min_samples=5)["2026E"]
+                           today=TODAY)["2026E"]
 
-    assert out["median"] is None
-    assert out["insufficient_samples"] is True
+    assert out["median"] == 100
+    assert "insufficient_samples" not in out
     assert out["max"] == 100
     assert out["weighted_mean"] == 100
 
@@ -188,7 +189,7 @@ def test_robust_stats_records_deviation_pct_for_review():
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
             for i, v in enumerate([81.0, 84.0, 86.0, 87.0, 88.0, 125.0])]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert len(out["outliers"]) == 1
     assert out["outliers"][0]["deviation_pct"] == pytest.approx(44.5, abs=1.0)
@@ -207,49 +208,50 @@ def test_preferred_stat_is_trimmed_mean_when_coverage_is_thick():
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
             for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["preferred_stat"] == "trimmed_mean"
     assert out["preferred_value"] == out["trimmed_mean"]
     assert out["median"] == pytest.approx(105.0), "中位数仍应正确计算"
 
 
-def test_preferred_stat_falls_back_to_simple_mean_when_thin():
-    """2-3 家覆盖：中位数/加权/离群都无意义，用简单算术平均。"""
+def test_thin_coverage_keeps_the_same_statistic():
+    """★不再按样本量切换统计量：截尾对 2 个样本本就退化成算术均值，
+    无需特判，下游拿到的口径始终一致。"""
     recs = [{"org": "券商A", "published": "2026-07-01", "value": 100.0},
             {"org": "券商B", "published": "2026-01-01", "value": 200.0}]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
-    assert out["preferred_stat"] == "mean"
-    assert out["preferred_value"] == 150.0, "薄覆盖时应为简单算术平均，不是加权均值"
+    assert out["preferred_stat"] == "trimmed_mean"
+    assert out["preferred_value"] == 150.0, "两样本的截尾均值等于算术均值"
 
 
-def test_preferred_value_ignores_recency_weighting_when_thin():
-    """薄覆盖时刻意不用 weighted_mean —— 2 个样本做时间加权是过度处理。"""
+def test_preferred_value_never_uses_recency_weighting():
+    """采用值始终是截尾均值，不是时间加权均值（加权仅作参考落盘）。"""
     recs = [{"org": "券商A", "published": "2026-08-01", "value": 100.0},
             {"org": "券商B", "published": "2025-01-01", "value": 200.0}]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["preferred_value"] == 150.0
     assert out["weighted_mean"] != out["preferred_value"]
 
 
-def test_thin_coverage_carries_explicit_reason():
-    """下游要能显示『为什么用的是简单均值』，不能只给个数。"""
+def test_reason_is_always_robust_now():
+    """薄覆盖不再是一种「理由」——统计量不因家数而变。"""
     recs = [{"org": "券商A", "published": "2026-07-01", "value": 100.0}]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
-    assert out["preferred_reason"] == "thin_coverage"
+    assert out["preferred_reason"] == "robust"
 
 
 def test_thick_coverage_reason_is_robust():
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": 100.0 + i}
             for i in range(6)]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["preferred_reason"] == "robust"
 
@@ -303,7 +305,7 @@ def test_robust_stats_exposes_trimmed_mean():
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
             for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 500.0])]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["trimmed_mean"] == pytest.approx(105.0)
 
@@ -313,18 +315,18 @@ def test_preferred_stat_uses_trimmed_mean_when_coverage_is_thick():
     recs = [{"org": f"券商{i}", "published": "2026-07-01", "value": v}
             for i, v in enumerate([100.0, 102.0, 104.0, 106.0, 108.0, 500.0])]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
     assert out["preferred_stat"] == "trimmed_mean"
     assert out["preferred_value"] == pytest.approx(105.0)
 
 
-def test_thin_coverage_still_uses_simple_mean():
-    """薄覆盖仍走简单算术平均，不因本次改动而变。"""
+def test_thin_coverage_result_equals_plain_mean():
+    """薄覆盖下截尾均值数值上等于算术平均——结果不变，只是不再改标签。"""
     recs = [{"org": "A", "published": "2026-07-01", "value": 100.0},
             {"org": "B", "published": "2026-01-01", "value": 200.0}]
 
-    out = urc.robust_stats({"2026E": recs}, today=TODAY, min_samples=5)["2026E"]
+    out = urc.robust_stats({"2026E": recs}, today=TODAY)["2026E"]
 
-    assert out["preferred_stat"] == "mean"
+    assert out["preferred_stat"] == "trimmed_mean"
     assert out["preferred_value"] == 150.0

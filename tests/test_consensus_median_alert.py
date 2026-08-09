@@ -75,35 +75,45 @@ def test_broker_estimates_handles_empty():
     assert urc.parse_em_broker_estimates(None) == {}
 
 
-# ── broker_stats:中位数与样本量守卫 ───────────────────────────────────────────
+# ── broker_stats:中位数（2026-08-09 起不设样本量阈值）─────────────────────────
+#
+# 用户当天定：「不建议设阈值，因为有些公司覆盖券商比较少」。券商少是这些公司的
+# 真实状态，不是数据缺陷，不该被当成异常。原先 min_samples=5 会在薄覆盖时
+# 把 median 留空并置 insufficient_samples；现在照常给出，家数如实显示，
+# 由读者自己判断 4 家和 46 家的分量——与「研究助手不是信号源」一致。
 
 
-def test_broker_stats_computes_median_with_enough_samples():
-    stats = urc.broker_stats({"2026E": [100.0, 200.0, 300.0, 400.0, 500.0]}, min_samples=5)
+def test_broker_stats_computes_median():
+    stats = urc.broker_stats({"2026E": [100.0, 200.0, 300.0, 400.0, 500.0]})
 
     assert stats["2026E"]["median"] == 300.0
     assert stats["2026E"]["count"] == 5
-    assert stats["2026E"]["insufficient_samples"] is False
 
 
 def test_broker_stats_median_of_even_count_averages_middle_two():
-    stats = urc.broker_stats({"2026E": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]}, min_samples=5)
+    stats = urc.broker_stats({"2026E": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]})
 
     assert stats["2026E"]["median"] == 35.0
 
 
-def test_broker_stats_withholds_median_when_samples_too_few():
-    """长鑫仅 2 家、长光 3 家 —— 给中位数是假精度，必须留 None 并标明。"""
-    stats = urc.broker_stats({"2026E": [100.0, 500.0]}, min_samples=5)
+def test_broker_stats_gives_median_even_for_thin_coverage():
+    """★不再按样本量截断：2 家覆盖的中位数就等于均值，无害且如实。"""
+    stats = urc.broker_stats({"2026E": [100.0, 500.0]})
 
-    assert stats["2026E"]["median"] is None
-    assert stats["2026E"]["insufficient_samples"] is True
+    assert stats["2026E"]["median"] == 300.0
     assert stats["2026E"]["count"] == 2
 
 
-def test_broker_stats_still_reports_range_when_samples_too_few():
-    """样本不够不代表数据无用 —— min/max 仍是真信息。"""
-    stats = urc.broker_stats({"2026E": [100.0, 500.0]}, min_samples=5)
+def test_broker_stats_no_longer_emits_insufficient_flag():
+    """薄覆盖不再被标成缺陷——家数本身就是要显示的事实。"""
+    stats = urc.broker_stats({"2026E": [100.0, 500.0]})
+
+    assert "insufficient_samples" not in stats["2026E"]
+
+
+def test_broker_stats_still_reports_range_when_samples_are_few():
+    """样本少不代表数据无用 —— min/max 仍是真信息。"""
+    stats = urc.broker_stats({"2026E": [100.0, 500.0]})
 
     assert stats["2026E"]["min"] == 100.0
     assert stats["2026E"]["max"] == 500.0
@@ -113,7 +123,7 @@ def test_broker_stats_median_differs_from_mean_under_skew():
     """这条说明中位数为什么值得做：一个极端值就能把均值拉偏 40%+。"""
     values = [100.0, 110.0, 120.0, 130.0, 900.0]
 
-    stats = urc.broker_stats({"2026E": values}, min_samples=5)
+    stats = urc.broker_stats({"2026E": values})
 
     assert stats["2026E"]["median"] == 120.0
     assert stats["2026E"]["mean"] == pytest.approx(272.0)

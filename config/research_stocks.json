@@ -6,25 +6,14 @@
     "snapshot_key": "300308",
     "page": "/innolight-300308.html",
     "business": "高速光模块",
-    "h_share": { "code": "03308", "tencent": "hk03308" },
-    "report_keywords": ["1.6T OSFP", "800G OSFP", "800G和1.6T"],
-    "consensus": {
-      "2026E": { "label": "2026E", "profit_yuan": 28500000000 },
-      "2027E": { "label": "2027E", "profit_yuan": 48000000000 }
+    "h_share": {
+      "code": "03308",
+      "tencent": "hk03308"
     },
-    "price_alerts": [
-      {
-        "label": "次优买点（基准场景）",
-        "threshold": 800,
-        "pe_band": "28–31x 2026E",
-        "cooldown_days": 3
-      },
-      {
-        "label": "最佳买点（等待调整）",
-        "threshold": 700,
-        "pe_band": "25–28x 2026E",
-        "cooldown_days": 3
-      }
+    "report_keywords": [
+      "1.6T OSFP",
+      "800G OSFP",
+      "800G和1.6T"
     ]
   },
   {
@@ -33,25 +22,7 @@
     "name": "寒武纪",
     "snapshot_key": "688256",
     "page": "/cambricon-688256.html",
-    "business": "AI 芯片",
-    "consensus": {
-      "2026E": { "label": "2026E", "profit_yuan": 4500000000 },
-      "2027E": { "label": "2027E", "profit_yuan": 7500000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "均衡买点（120x 2026E）",
-        "threshold": 859,
-        "pe_band": "120x 2026E",
-        "cooldown_days": 3
-      },
-      {
-        "label": "最佳买点（100x 2026E）",
-        "threshold": 716,
-        "pe_band": "100x 2026E",
-        "cooldown_days": 3
-      }
-    ]
+    "business": "AI 芯片"
   },
   {
     "symbol": "688702",
@@ -60,19 +31,7 @@
     "snapshot_key": "688702",
     "page": "/shengke-688702.html",
     "business": "以太网交换芯片",
-    "valuation_mode": "ps",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 2000000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 3000000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "基准买点（80x 2026E PS）",
-        "threshold": 390,
-        "pe_band": "80x 2026E PS",
-        "cooldown_days": 3
-      }
-    ]
+    "valuation_mode": "ps"
   },
   {
     "symbol": "688498",
@@ -81,25 +40,7 @@
     "snapshot_key": "688498",
     "page": "/yuanjie-688498.html",
     "business": "光芯片",
-    "valuation_mode": "both",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 1400000000, "profit_yuan": 700000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 3500000000, "profit_yuan": 1400000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "均衡买点（60x 2026E PS）",
-        "threshold": 977,
-        "pe_band": "60x 2026E PS",
-        "cooldown_days": 3
-      },
-      {
-        "label": "最佳买点（45x 2026E PS）",
-        "threshold": 733,
-        "pe_band": "45x 2026E PS",
-        "cooldown_days": 3
-      }
-    ]
+    "valuation_mode": "both"
   },
   {
     "symbol": "688048",
@@ -108,25 +49,7 @@
     "snapshot_key": "688048",
     "page": "/changguang-688048.html",
     "business": "半导体激光芯片",
-    "valuation_mode": "ps",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 638000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 870000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "均衡买点（80x 2026E PS）",
-        "threshold": 289,
-        "pe_band": "80x 2026E PS",
-        "cooldown_days": 3
-      },
-      {
-        "label": "最佳买点（60x 2026E PS）",
-        "threshold": 217,
-        "pe_band": "60x 2026E PS",
-        "cooldown_days": 3
-      }
-    ]
+    "valuation_mode": "ps"
   },
   {
     "symbol": "000636",
@@ -135,12 +58,7 @@
     "snapshot_key": "000636",
     "page": "/fenghua-000636.html",
     "business": "被动元件 MLCC",
-    "valuation_mode": "both",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 6850000000, "profit_yuan": 612000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 7300000000, "profit_yuan": 753000000 }
-    },
-    "price_alerts": []
+    "valuation_mode": "both"
   },
   {
     "symbol": "300408",
@@ -149,13 +67,11 @@
     "snapshot_key": "300408",
     "page": "/sanhuan-300408.html",
     "business": "电子陶瓷元件",
-    "h_share": { "code": "06951", "tencent": "hk06951" },
-    "valuation_mode": "both",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 11200000000, "profit_yuan": 3270000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 13600000000, "profit_yuan": 4000000000 }
+    "h_share": {
+      "code": "06951",
+      "tencent": "hk06951"
     },
-    "price_alerts": []
+    "valuation_mode": "both"
   },
   {
     "symbol": "300750",
@@ -164,25 +80,10 @@
     "snapshot_key": "300750",
     "page": "/catl-300750.html",
     "business": "动力电池",
-    "h_share": { "code": "03750", "tencent": "hk03750" },
-    "consensus": {
-      "2026E": { "label": "2026E", "profit_yuan": 92000000000 },
-      "2027E": { "label": "2027E", "profit_yuan": 113000000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "次优买点（~16x 2026E）",
-        "threshold": 330,
-        "pe_band": "16x 2026E",
-        "cooldown_days": 3
-      },
-      {
-        "label": "最佳买点（~14x 2026E）",
-        "threshold": 285,
-        "pe_band": "14x 2026E",
-        "cooldown_days": 3
-      }
-    ]
+    "h_share": {
+      "code": "03750",
+      "tencent": "hk03750"
+    }
   },
   {
     "symbol": "600519",
@@ -191,25 +92,7 @@
     "snapshot_key": "600519",
     "page": "/moutai-600519.html",
     "business": "白酒",
-    "valuation_mode": "pe",
-    "consensus": {
-      "2026E": { "label": "2026E", "profit_yuan": 85270000000 },
-      "2027E": { "label": "2027E", "profit_yuan": 89490000000 }
-    },
-    "price_alerts": [
-      {
-        "label": "保守买点（15x 2025A EPS）",
-        "threshold": 985,
-        "pe_band": "15x 2025A EPS",
-        "cooldown_days": 3
-      },
-      {
-        "label": "深度价值买点（12x 2025A EPS）",
-        "threshold": 788,
-        "pe_band": "12x 2025A EPS",
-        "cooldown_days": 3
-      }
-    ]
+    "valuation_mode": "pe"
   },
   {
     "symbol": "02513",
@@ -220,12 +103,7 @@
     "business": "大模型",
     "valuation_mode": "ps",
     "consensus_currency": "CNY",
-    "consensus_note": "2026-08-04 订正：原 2025E 5亿/2026E 10亿 为 2026-06-24 人工录入，与实际严重偏离（2025 实际营收 7.24亿）。现值取自 yfinance 机构一致预期（2513.HK，financialCurrency=CNY）：2026E 37.30亿(16家，区间24.84~54.98)、2027E 95.39亿(13家，区间46.80~143.55)。港股不被同花顺/东财F10覆盖，故不进 update_research_consensus.py 自动流程；市值为 HKD 报价，PS 计算按 consensus_currency 走汇率换算。",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 3730110510 },
-      "2027E": { "label": "2027E", "revenue_yuan": 9538914610 }
-    },
-    "price_alerts": []
+    "consensus_note": "2026-08-04 订正：原 2025E 5亿/2026E 10亿 为 2026-06-24 人工录入，与实际严重偏离（2025 实际营收 7.24亿）。现值取自 yfinance 机构一致预期（2513.HK，financialCurrency=CNY）：2026E 37.30亿(16家，区间24.84~54.98)、2027E 95.39亿(13家，区间46.80~143.55)。港股不被同花顺/东财F10覆盖，故不进 update_research_consensus.py 自动流程；市值为 HKD 报价，PS 计算按 consensus_currency 走汇率换算。"
   },
   {
     "symbol": "688825",
@@ -235,11 +113,6 @@
     "page": "/cxmt-ipo.html",
     "business": "DRAM 存储芯片",
     "valuation_mode": "both",
-    "consensus_note": "2026-08-03 取自同花顺一致预期，仅 3 家机构覆盖（上市 6 个交易日），离散度见 688825-consensus.json；研报页=cxmt-ipo.html（pre-IPO 静态页，8-03 已全面审计并接入行情水合 + 週报叙事）",
-    "consensus": {
-      "2026E": { "label": "2026E", "revenue_yuan": 281334000000, "profit_yuan": 140256000000 },
-      "2027E": { "label": "2027E", "revenue_yuan": 433530000000, "profit_yuan": 239811000000 }
-    },
-    "price_alerts": []
+    "consensus_note": "2026-08-03 取自同花顺一致预期，仅 3 家机构覆盖（上市 6 个交易日），离散度见 688825-consensus.json；研报页=cxmt-ipo.html（pre-IPO 静态页，8-03 已全面审计并接入行情水合 + 週报叙事）"
   }
 ]

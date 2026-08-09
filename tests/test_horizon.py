@@ -94,6 +94,9 @@ class TestSnapshotRespectsHorizon:
                  "ma20": 1300.0, "ma20_slope": "down", "vol_60d_ann_pct": 20.0,
                  "vol_ratio_5_60": 1.0, "week52_high": 1600.0, "week52_low": 1200.0,
                  "week52_is_full": True}
+        # 注册表兜底已删（2026-08-09），一致预期必须来自自动源文件
+        from conftest import write_auto_consensus
+        write_auto_consensus(tmp_path, "600519", stock.pop("consensus"))
         with mock.patch.object(urs, "fetch_quote_data", return_value=quote), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=ohlcv), \
              mock.patch.object(urs, "DATA_DIR", tmp_path):

@@ -147,11 +147,11 @@ class TestGracefulDegradation:
 class TestWiredIntoSnapshot:
     _STOCK_AH = {"symbol": "300308", "exchange": "SZ", "name": "中际旭创",
                  "snapshot_key": "300308", "valuation_mode": "pe",
-                 "h_share": {"code": "03308", "tencent": "hk03308"},
-                 "consensus": {"2026E": {"profit_yuan": 3.09e10}}}
+                 "h_share": {"code": "03308", "tencent": "hk03308"}}
     _STOCK_PLAIN = {"symbol": "688256", "exchange": "SH", "name": "寒武纪",
-                    "snapshot_key": "688256", "valuation_mode": "pe",
-                    "consensus": {"2026E": {"profit_yuan": 5.0e9}}}
+                    "snapshot_key": "688256", "valuation_mode": "pe"}
+    _CONSENSUS = {"300308": {"2026E": {"profit_yuan": 3.09e10}},
+                  "688256": {"2026E": {"profit_yuan": 5.0e9}}}
     _QUOTE = {"price_yuan": 919.87, "market_cap_yuan": 1.076004e12,
               "change_pct": 1.0, "vol_wan_shou": 57.2, "turnover_yuan": 5.467e10}
     _OHLCV = {"year_return_pct": 300.0, "period_return_pct": 300.0, "history_days": 241,
@@ -161,6 +161,10 @@ class TestWiredIntoSnapshot:
 
     def _build(self, stock, tmp_path, h_quote=_H_QUOTE, fx=0.86):
         import unittest.mock as mock
+        # 注册表兜底已删（2026-08-09）：一致预期必须来自自动源文件
+        from conftest import write_auto_consensus
+        write_auto_consensus(tmp_path, stock["snapshot_key"],
+                             self._CONSENSUS[stock["snapshot_key"]])
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
              mock.patch.object(urs, "fetch_h_quote", return_value=h_quote), \

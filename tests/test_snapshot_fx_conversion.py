@@ -70,10 +70,10 @@ class TestHkSnapshotUsesConvertedCap:
         "symbol": "02513", "exchange": "HK", "name": "智谱", "snapshot_key": "02513",
         "valuation_mode": "ps",
         "consensus_currency": "CNY",
-        "consensus": {
-            "2026E": {"label": "2026E", "revenue_yuan": 3_730_110_510},
-            "2027E": {"label": "2027E", "revenue_yuan": 9_538_914_610},
-        },
+    }
+    _CONSENSUS = {
+        "2026E": {"label": "2026E", "revenue_yuan": 3_730_110_510},
+        "2027E": {"label": "2027E", "revenue_yuan": 9_538_914_610},
     }
     _QUOTE = {"price_yuan": 1024.0, "market_cap_yuan": 480_500_000_000.0,
               "change_pct": 2.0, "vol_wan_shou": 500.0}
@@ -83,17 +83,20 @@ class TestHkSnapshotUsesConvertedCap:
               "week52_is_full": False}
 
     def _build(self, tmp_path):
-        """★必须 patch DATA_DIR。
+        """★必须 patch DATA_DIR 并自备一致预期文件。
 
         `build_snapshot` 内部会调 `resolve_consensus()` 去读
         `docs-site/data/{key}-consensus.json`；不 patch 的话这个类看似在测
         `_STOCK` 里声明的固定输入，实际吃的是**生产数据**——2026-08-07 重跑一次
         consensus（智谱预期变动）就把它跑挂了，期望值 110.8 变成 107.6。
 
-        测试断言的是「换算逻辑对不对」，不该随生产数据漂移。指向空目录后
-        `resolve_consensus` 回落到 `_STOCK["consensus"]`，输入才真正固定。
+        2026-08-09 起注册表兜底已删（用户拍板：宁可不显示，也不显示一个用登记日
+        旧预期算出的错 PE），所以固定输入不能再靠 `_STOCK["consensus"]`，
+        必须写成自动源文件——这也让测试走的路径与生产完全一致。
         """
         import unittest.mock as mock
+        from conftest import write_auto_consensus
+        write_auto_consensus(tmp_path, self._STOCK["snapshot_key"], self._CONSENSUS)
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
              mock.patch.object(urs, "fetch_fx_rate", return_value=0.8604), \
@@ -132,8 +135,8 @@ class TestAShareSnapshotUnaffected:
     _STOCK = {
         "symbol": "300308", "exchange": "SZ", "name": "中际旭创", "snapshot_key": "300308",
         "valuation_mode": "pe",
-        "consensus": {"2026E": {"label": "2026E", "profit_yuan": 30_394_000_000}},
     }
+    _CONSENSUS = {"2026E": {"label": "2026E", "profit_yuan": 30_394_000_000}}
     _QUOTE = {"price_yuan": 1026.0, "market_cap_yuan": 1_200_100_000_000.0,
               "change_pct": 13.7, "vol_wan_shou": 80.0}
     _OHLCV = {"year_return_pct": 335.7, "period_return_pct": 335.7, "history_days": 241,
@@ -142,8 +145,10 @@ class TestAShareSnapshotUnaffected:
               "week52_is_full": True}
 
     def test_a_share_pe_unchanged_and_no_fx_fetch(self, tmp_path):
-        # DATA_DIR 指向空目录：本用例验证注册表兜底路径，不应受真实 consensus.json 影响
+        # DATA_DIR 指向 tmp：自备一致预期，不受真实 consensus.json 漂移影响
         import unittest.mock as mock
+        from conftest import write_auto_consensus
+        write_auto_consensus(tmp_path, self._STOCK["snapshot_key"], self._CONSENSUS)
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
              mock.patch.object(urs, "DATA_DIR", tmp_path), \

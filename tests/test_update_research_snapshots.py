@@ -208,8 +208,8 @@ class TestBuildSnapshotUsesQuoteData:
         "name": "中际旭创",
         "snapshot_key": "300308",
         "valuation_mode": "pe",
-        "consensus": {"2026E": {"profit_yuan": 32.2e9}},
     }
+    _CONSENSUS = {"2026E": {"profit_yuan": 32.2e9}}
     _QUOTE = {"price_yuan": 1275.0, "market_cap_yuan": 14215.10e8, "change_pct": 6.98, "vol_wan_shou": 34.5}
     _OHLCV = {
         "year_return_pct": 100.0, "ma20": 1013.35, "ma20_slope": "up",
@@ -220,9 +220,11 @@ class TestBuildSnapshotUsesQuoteData:
     def test_snapshot_built_from_quote_data(self, tmp_path):
         """build_snapshot 调用 fetch_quote_data(而非直接 fetch_em_data)。
 
-        DATA_DIR 指向空目录:本用例断言的是注册表口径的 PE,
-        不应受真实 {key}-consensus.json 影响(2026-08-04 起自动源优先)。
+        DATA_DIR 指向 tmp 并自备一致预期:断言的是 PE 计算本身,
+        不应受真实 {key}-consensus.json 漂移影响。
         """
+        from conftest import write_auto_consensus
+        write_auto_consensus(tmp_path, self._STOCK["snapshot_key"], self._CONSENSUS)
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE) as m_q, \
              mock.patch.object(urs, "DATA_DIR", tmp_path), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV):

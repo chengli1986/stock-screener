@@ -113,79 +113,14 @@ def test_parse_ths_dispersion_computes_spread_ratio():
     assert disp["2027"]["spread_ratio"] == pytest.approx(799.82 / 339.90, rel=1e-3)
 
 
-# ── compare_with_registry:与冻结值对比 ────────────────────────────────────────
-
-
-def test_compare_with_registry_computes_delta_pct():
-    stock = {
-        "symbol": "300308",
-        "name": "中际旭创",
-        "consensus": {
-            "2026E": {"profit_yuan": 28_500_000_000},
-            "2027E": {"profit_yuan": 48_000_000_000},
-        },
-    }
-    parsed = {"2026E": {"profit": 30_394_000_000.0}, "2027E": {"profit": 53_534_000_000.0}}
-
-    deltas = urc.compare_with_registry(stock, parsed)
-
-    by_key = {(d["year"], d["field"]): d for d in deltas}
-    assert by_key[("2026E", "profit")]["delta_pct"] == pytest.approx(6.6, abs=0.1)
-    assert by_key[("2027E", "profit")]["delta_pct"] == pytest.approx(11.5, abs=0.1)
-    assert by_key[("2026E", "profit")]["frozen"] == 28_500_000_000
-
-
-def test_compare_with_registry_only_compares_registered_fields():
-    """注册表只登记了营收的股票(PS 模式),不应凭空生成净利对比行。"""
-    stock = {
-        "symbol": "688702",
-        "name": "盛科通信",
-        "consensus": {"2026E": {"revenue_yuan": 2_000_000_000}},
-    }
-    parsed = {"2026E": {"revenue": 1_729_000_000.0, "profit": 56_000_000.0}}
-
-    deltas = urc.compare_with_registry(stock, parsed)
-
-    assert [(d["year"], d["field"]) for d in deltas] == [("2026E", "revenue")]
-    assert deltas[0]["delta_pct"] == pytest.approx(-13.55, abs=0.1)
-
-
-def test_compare_with_registry_marks_missing_latest_without_crashing():
-    """上游没给某年预测时应标记为缺失,而不是抛异常或算出假的 0%。"""
-    stock = {
-        "symbol": "000636",
-        "name": "风华高科",
-        "consensus": {"2028E": {"profit_yuan": 1_000_000_000}},
-    }
-
-    deltas = urc.compare_with_registry(stock, {"2026E": {"profit": 5.0}})
-
-    assert deltas[0]["latest"] is None
-    assert deltas[0]["delta_pct"] is None
-
-
-# ── significant_changes:告警门槛 ──────────────────────────────────────────────
-
-
-def test_significant_changes_filters_by_threshold():
-    deltas = [
-        {"year": "2026E", "field": "profit", "delta_pct": 6.6},
-        {"year": "2027E", "field": "profit", "delta_pct": 52.3},
-        {"year": "2027E", "field": "revenue", "delta_pct": -16.5},
-        {"year": "2026E", "field": "revenue", "delta_pct": None},
-    ]
-
-    flagged = urc.significant_changes(deltas, threshold_pct=10.0)
-
-    assert [d["delta_pct"] for d in flagged] == [52.3, -16.5]
-
-
-def test_significant_changes_treats_threshold_as_absolute_value():
-    """下修和上调同等重要 —— 只看绝对幅度。"""
-    flagged = urc.significant_changes([{"delta_pct": -10.0}, {"delta_pct": 9.9}], threshold_pct=10.0)
-
-    assert len(flagged) == 1
-    assert flagged[0]["delta_pct"] == -10.0
+# ── 注册表冻结值对比：2026-08-09 整段删除 ─────────────────────────────────────
+#
+# 原有 `compare_with_registry` / `significant_changes` 用来把最新一致预期跟
+# `research_stocks.json` 里的人工冻结值比，并在偏离超阈值时提示「需人工同步注册表」。
+# 用户当天拍板**删掉注册表兜底**（宁可不显示，也不显示一个用登记日旧预期算出的错 PE），
+# 冻结值随之从配置里清空——这两个函数的输入永远为空，产出永远是空列表，
+# 留着只会让人以为还有一道人工校验。故连同 `deltas_vs_registry` 字段一并删除。
+# 新契约见 tests/test_snapshot_consensus_source.py。
 
 
 # ── build_record:落盘 JSON 结构 ───────────────────────────────────────────────
@@ -193,8 +128,7 @@ def test_significant_changes_treats_threshold_as_absolute_value():
 
 def test_build_record_carries_provenance_and_dispersion():
     """落盘必须带来源和抓取时间,否则下一个人无法判断这份数据是不是又变成了化石。"""
-    stock = {"symbol": "300308", "name": "中际旭创", "snapshot_key": "300308",
-             "consensus": {"2026E": {"profit_yuan": 28_500_000_000}}}
+    stock = {"symbol": "300308", "name": "中际旭创", "snapshot_key": "300308"}
     parsed = {"2026E": {"revenue": 95_968_000_000.0, "profit": 30_394_000_000.0}}
     disp = {"2026": {"orgs": 31, "min": 2.3302e10, "mean": 3.0394e10,
                      "max": 4.0531e10, "spread_ratio": 1.74}}
@@ -207,14 +141,13 @@ def test_build_record_carries_provenance_and_dispersion():
     assert rec["estimates"]["2026E"]["profit_yuan"] == 30_394_000_000.0
     assert rec["estimates"]["2026E"]["orgs"] == 31
     assert rec["estimates"]["2026E"]["spread_ratio"] == pytest.approx(1.74)
-    assert rec["deltas_vs_registry"][0]["delta_pct"] == pytest.approx(6.6, abs=0.1)
+    assert "deltas_vs_registry" not in rec, "注册表对比已于 2026-08-09 删除"
 
 
 def test_build_record_rounds_away_float_noise():
     """`亿 → 元` 的 ×1e8 会留下浮点尾巴(233407000000.00003 / 33989999999.999996),
     落进 JSON 后既难读又显得像坏数据。金额取整到元,比值/百分比保留 2 位。"""
-    stock = {"symbol": "300308", "name": "中际旭创", "snapshot_key": "300308",
-             "consensus": {"2027E": {"profit_yuan": 48_000_000_000}}}
+    stock = {"symbol": "300308", "name": "中际旭创", "snapshot_key": "300308"}
     parsed = {"2028E": {"revenue": 233_407_000_000.00003},
               "2027E": {"profit": 53_534_000_000.0}}
     disp = {"2027": {"orgs": 31, "min": 33_989_999_999.999996,
@@ -226,4 +159,3 @@ def test_build_record_rounds_away_float_noise():
     assert rec["estimates"]["2028E"]["revenue_yuan"] == 233_407_000_000
     assert rec["estimates"]["2027E"]["profit_min_yuan"] == 33_990_000_000
     assert rec["estimates"]["2027E"]["spread_ratio"] == 2.35
-    assert rec["deltas_vs_registry"][0]["delta_pct"] == 11.53
