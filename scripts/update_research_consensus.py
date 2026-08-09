@@ -1498,6 +1498,12 @@ def main() -> int:
                         {}, args.threshold,
                     ),
                     "cross_source": None,
+                    # ★港股这条记录是独立字面量拼的，不走 build_record()，
+                    # 2026-08-09 的视界重构漏了它——consensus.json 里没有 horizon，
+                    # 页面只能退回自己写死的 ['2026E','2027E']。现在恰好对，
+                    # 但 2027 年一到港股页就会显示一个已成为实际值的年份。
+                    # 这正是那次重构要消灭的东西，漏在了第二个构建路径上。
+                    "horizon": list(horizon_years()),
                     "ratings": yf_data.get("ratings"),
                     "financial_currency": yf_data.get("financial_currency"),
                     "quote_currency": yf_data.get("quote_currency"),

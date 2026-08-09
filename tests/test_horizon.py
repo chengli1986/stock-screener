@@ -101,3 +101,29 @@ class TestSnapshotRespectsHorizon:
 
         assert "2028E" not in snap["pe_estimates"]
         assert set(snap["pe_estimates"]) == {"2026E", "2027E"}
+
+
+class TestHorizonReachesEveryRecordPath:
+    """★2026-08-09 视界重构漏了港股：那条记录是独立字面量拼的，不走 build_record()。
+
+    实测 `02513-consensus.json` 里**没有 horizon 字段**，页面只能退回自己写死的
+    `['2026E','2027E']`——现在恰好对，2027 年一到港股页就会显示一个已成为实际值
+    的年份。重构要消灭的正是这种「同一概念多处定义」，结果漏在第二个构建路径上。
+    """
+
+    def test_hk_record_literal_carries_horizon(self):
+        src = (_ROOT / "scripts" / "update_research_consensus.py").read_text(encoding="utf-8")
+        # 港股记录以 financial_currency 为标志（A 股路径没有这个字段）
+        i = src.index('"financial_currency": yf_data')
+        block = src[max(0, i - 1600):i]
+
+        assert '"horizon": list(horizon_years())' in block, "港股记录没有落 horizon 字段"
+
+    def test_every_deployed_consensus_has_horizon(self):
+        import json as _json
+        from pathlib import Path as _Path
+        data = _Path.home() / "docs-site" / "data"
+        missing = [p.name for p in sorted(data.glob("*-consensus.json"))
+                   if "horizon" not in _json.loads(p.read_text())]
+
+        assert not missing, f"这些 consensus.json 没有 horizon，页面只能猜: {missing}"
