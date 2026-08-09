@@ -693,6 +693,40 @@ def parse_em_broker_records(ycmx: list[dict] | None) -> dict[str, list[dict]]:
     return out
 
 
+def merge_coverage_orgs(record: dict) -> dict:
+    """把同花顺的**覆盖机构数**并进 broker_stats，并据此重判薄覆盖。
+
+    ★2026-08-09 用户质疑「长鑫只有 2 家券商覆盖？」带出的 bug。两个数字含义不同：
+      `estimates[y].orgs`（同花顺汇总）＝ 有多少家机构给了该年预测
+      `broker_stats[y].count`（东财 F10 明细）＝ 能拿到逐家姓名与数值的有多少条
+    后者永远 ≤ 前者（实测茅台 46 vs 31、宁德 39 vs 27、长鑫 4 vs 2）。
+
+    `robust_stats()` 用后者是对的——中位数/MAD 离群/新鲜度加权都必须有逐家数据。
+    **错在把它当「覆盖机构数」对外展示**，也错在用它判薄覆盖：一旦出现
+    orgs=8 而 count=4，会把覆盖充分的标的误判为样本不足，并连带触发买点告警的门禁。
+
+    预测区间同理：长鑫同花顺 1,244~1,518 亿，东财明细只有 1,449~1,518，
+    少了一家更悲观的。茅台宁德恰好一致（东财那批已含极值机构）——
+    **这种「恰好对上」最危险，让 bug 在大盘股上完全隐形**。
+    """
+    stats = record.get("broker_stats") or {}
+    ests = record.get("estimates") or {}
+    for year, bs in stats.items():
+        if not isinstance(bs, dict):
+            continue
+        est = ests.get(year) or {}
+        orgs = est.get("orgs")
+        bs["coverage_orgs"] = orgs if orgs else bs.get("count")
+        if est.get("profit_min_yuan") is not None:
+            bs["coverage_min"] = est["profit_min_yuan"]
+        if est.get("profit_max_yuan") is not None:
+            bs["coverage_max"] = est["profit_max_yuan"]
+        eff = bs.get("coverage_orgs")
+        if eff is not None:
+            bs["insufficient_samples"] = eff < MIN_MEDIAN_SAMPLES
+    return record
+
+
 def robust_stats(per_year: dict[str, list[dict]], today=None,
                  half_life_days: int = RECENCY_HALF_LIFE_DAYS,
                  k: float = MAD_OUTLIER_K,
@@ -973,6 +1007,11 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
     """写 docs-site/data/ 并同步到 /var/www(与 update_research_snapshots.py 同款)。"""
     DOCS_DATA.mkdir(parents=True, exist_ok=True)
     path = DOCS_DATA / f"{snapshot_key}-consensus.json"
+    # 覆盖机构数并入 broker_stats。放在落盘入口而不是 main 的两处赋值点旁边——
+    # 那样早晚会漏一处，而「算了没接」这套管线已经犯过两次
+    # （preferred_stat 落盘但页面用旧口径、tencent 码没落盘导致页面静默匹配失败）。
+    merge_coverage_orgs(record)
+
     path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if DEPLOY_DATA.is_dir():
         shutil.copy2(path, DEPLOY_DATA / path.name)
