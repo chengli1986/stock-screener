@@ -1019,13 +1019,13 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
     # （preferred_stat 落盘但页面用旧口径、tencent 码没落盘导致页面静默匹配失败）。
     merge_coverage_orgs(record)
 
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if DEPLOY_DATA.is_dir():
-        shutil.copy2(path, DEPLOY_DATA / path.name)
-
     # 顺带记一笔修正历史。放在这里而不是 main 的两处调用点旁边——
     # 那样早晚会漏掉一处，而「算了没接」是这套管线已经犯过的错
     # （preferred_stat 落盘了但页面仍用旧口径）。
+    #
+    # ★必须在写 consensus.json **之前**：本次观测要先进历史，动能才算得进今天。
+    # 原顺序（先写 json 再 append）会让页面上的动能永远比数据晚一轮。
+    # 与 verdict_transitions 不冲突——那个在 main 里、调用本函数之前就跑完了。
     try:
         hist = append_history(snapshot_key, record, DOCS_DATA)
         if DEPLOY_DATA.is_dir():
@@ -1033,6 +1033,12 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
     except Exception as e:  # noqa: BLE001 — 历史是加分项，不该拖垮当期数据落盘
         print(f"WARN: [{snapshot_key}] 修正历史写入失败: {type(e).__name__}: {e}",
               file=sys.stderr)
+
+    attach_revision_momentum(record, snapshot_key, DOCS_DATA)
+
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if DEPLOY_DATA.is_dir():
+        shutil.copy2(path, DEPLOY_DATA / path.name)
 
 
 # ── 预期修正历史（revision momentum 的地基） ──────────────────────────────────
@@ -1049,6 +1055,20 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
 
 REVISION_FLAT_BAND_PCT = 2.0      # ±2% 内视为无修正（机构微调模型参数是常态）
 REVISION_LOOKBACK_DAYS = 90
+
+# 最短观测跨度：不到这个天数**不许说「持平」**。
+#
+# 2026-08-09 接线前实测：全池 11 只 × 2 年全部返回 `flat 0.0%`，跨度 2 天——
+# 因为当时只有 8-07、8-09 两个观测点，且都是开发时手跑的（cron 是每周一，
+# 8-07 是周五、8-09 是周日），数值一模一样。「持平」技术上没错，实质是
+# **「隔两天拍了两张照片，当然看不出变化」**，读者却会读成「机构预期稳定」。
+# 这与 8-07 否决「从 git 历史刨」是同一个陷阱（5 个版本全落在两天内），低一层而已。
+#
+# ★但**不能一刀切按跨度否决**：事件驱动的修正（旭创 FCC 调查那类）恰恰发生在
+# 相邻两周之间，一刀切会把最想要的信号压掉。故只对「看起来没变」的情形要求跨度：
+#   |变化| >= FLAT_BAND → 照报（机构确实动了），但结果里带上 span_days / points
+#   |变化| <  FLAT_BAND 且跨度不足 → insufficient（分不清「稳定」和「没观测到」）
+REVISION_MIN_SPAN_DAYS = 21
 
 # 本脚本的 cron 规则（2026-08-08 起）：**全年每周一**，单条 `45 0 * * 1`。
 #
@@ -1074,8 +1094,13 @@ def expected_runs_between(last_fetch: "date", today: "date") -> int:
     return n
 
 
-def build_history_observation(record: dict) -> dict:
-    """把一次抓取压成一行观测。口径与页面/买点告警一致（截尾均值优先）。"""
+def build_history_observation(record: dict, price: float | None = None) -> dict:
+    """把一次抓取压成一行观测。口径与页面/买点告警一致（截尾均值优先）。
+
+    `price` 是当时的股价。记它是为了让「预期变化」和「股价变化」用**同一个窗口**——
+    单看「预期被上调 14%」没法判断意味着什么，与同期股价一对照才分得出
+    「市场恐慌但基本面没坏」和「基本面真的在恶化」。
+    """
     fetched = str(record.get("fetched_at") or "")[:10]
     stats = record.get("broker_stats") or {}
     cross = record.get("cross_check") or {}
@@ -1100,7 +1125,10 @@ def build_history_observation(record: dict) -> dict:
             "verdict": cc.get("verdict"),
             "range_verdict": (rng.get(year) or {}).get("verdict"),
         }
-    return {"as_of": fetched, "years": years}
+    obs = {"as_of": fetched, "years": years}
+    if price is not None:
+        obs["price"] = price
+    return obs
 
 
 # ── 只在状态变化时告警 ────────────────────────────────────────────────────────
@@ -1258,6 +1286,19 @@ def build_transition_alert_html(transitions: list, fetched_at: str) -> str | Non
     return "".join(parts)
 
 
+def _snapshot_price(snapshot_key: str, data_dir: pathlib.Path) -> float | None:
+    """取快照里的现价。本脚本周一 08:45 BJT 跑，而快照是交易日 15:30 刷新，
+    所以拿到的是**上一个交易日收盘价**——这不影响窗口对照（两端同口径）。
+    快照缺失/字段缺失时返回 None，历史里就不写 price 字段，页面据此显示「—」。"""
+    p = data_dir / f"{snapshot_key}-snapshot.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("price_yuan")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> pathlib.Path:
     """追加一条观测；**同日重跑覆盖而非追加**。
 
@@ -1266,7 +1307,7 @@ def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> p
     """
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
-    obs = build_history_observation(record)
+    obs = build_history_observation(record, price=_snapshot_price(snapshot_key, data_dir))
 
     rows = []
     if path.exists():
@@ -1305,13 +1346,15 @@ def _momentum_for_metric(rows: list, lookback_days: int, metric: str) -> dict | 
     if from_val <= 0:      # 负基数（亏损标的）算不出有意义的百分比
         return None
     change = (to_val / from_val - 1) * 100
-    direction = ("flat" if abs(change) < REVISION_FLAT_BAND_PCT
-                 else ("up" if change > 0 else "down"))
     span = (datetime.strptime(to_date, "%Y-%m-%d")
             - datetime.strptime(from_date, "%Y-%m-%d")).days
+    if abs(change) < REVISION_FLAT_BAND_PCT and span < REVISION_MIN_SPAN_DAYS:
+        return None      # 跨度不足时「看起来没变」等于「没观测到」，不许报 flat
+    direction = ("flat" if abs(change) < REVISION_FLAT_BAND_PCT
+                 else ("up" if change > 0 else "down"))
     return {"direction": direction, "change_pct": round(change, 1),
             "from_date": from_date, "to_date": to_date, "span_days": span,
-            "metric": metric}
+            "points": len(window), "metric": metric}
 
 
 def revision_momentum(snapshot_key: str, year: str, data_dir: pathlib.Path,
@@ -1331,34 +1374,74 @@ def revision_momentum(snapshot_key: str, year: str, data_dir: pathlib.Path,
     「源杰跌 35% 但 2027E **营收**预期被下调 24%」——只算 profit 的话，
     实现算不出自己的论据。
     """
+    path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
+    points = 0
+    series: dict[str, list] = {"profit": [], "revenue": []}
+    prices: dict[str, float] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            as_of = r.get("as_of")
+            if not as_of:
+                continue
+            points += 1
+            if r.get("price") is not None:
+                prices[as_of] = float(r["price"])
+            yv = (r.get("years") or {}).get(year) or {}
+            for m in ("profit", "revenue"):
+                v = yv.get(m)
+                if v is not None:
+                    series[m].append((as_of, float(v)))
+
+    # 观测点总数与首次观测日即使算不出动能也要给——页面要显示
+    # 「已记录 N 次，需约 4 次，预计 X 月 X 日起可用」，否则读者只看到
+    # 「观测不足」，不知道还要等多久，会以为是坏了。
+    all_dates = sorted({d for s in series.values() for d, _ in s})
     none_result = {"direction": "insufficient", "change_pct": None,
                    "from_date": None, "to_date": None, "span_days": None,
-                   "metric": None}
-    path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
-    if not path.exists():
-        return none_result
-
-    series: dict[str, list] = {"profit": [], "revenue": []}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        yv = (r.get("years") or {}).get(year) or {}
-        for m in ("profit", "revenue"):
-            v = yv.get(m)
-            if v is not None and r.get("as_of"):
-                series[m].append((r["as_of"], float(v)))
+                   "points": points, "metric": None, "price_change_pct": None,
+                   "first_obs": all_dates[0] if all_dates else None}
 
     order = [metric] if metric else ["profit", "revenue"]
     for m in order:
         got = _momentum_for_metric(series.get(m) or [], lookback_days, m)
         if got:
+            got["first_obs"] = all_dates[0] if all_dates else None
+            # 同期股价用**完全相同的窗口端点**算——错开窗口就没法说
+            # 「预期涨而价格跌」，那正是这个功能唯一的用处。
+            got["price_change_pct"] = _price_change(prices, got["from_date"], got["to_date"])
             return got
     return none_result
+
+
+def attach_revision_momentum(record: dict, snapshot_key: str,
+                             data_dir: pathlib.Path) -> dict:
+    """把视界内各年的修正动能挂进 record，供页面消费。
+
+    只算视界内的年份：2028E 的预期修正对「看到 2027 年底就够了」的读者是噪音。
+    每年都写一条（包括 `insufficient`）——**不能因为算不出就不写字段**，
+    那样页面分不清「这只股没数据」和「这个功能没接上」。
+    """
+    out = {}
+    for year in horizon_years():
+        if year in (record.get("estimates") or {}):
+            out[year] = revision_momentum(snapshot_key, year, data_dir)
+    record["revision_momentum"] = out
+    return out
+
+
+def _price_change(prices: dict, from_date: str, to_date: str) -> float | None:
+    """同窗口股价变化；两端任一缺价（历史里还没有 price 字段）返回 None。"""
+    p0, p1 = prices.get(from_date), prices.get(to_date)
+    if not p0 or not p1 or p0 <= 0:
+        return None
+    return round((p1 / p0 - 1) * 100, 1)
 
 
 def _fmt_yi(value: float | None) -> str:
