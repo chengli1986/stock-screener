@@ -1071,6 +1071,8 @@ def build_history_observation(record: dict) -> dict:
     """把一次抓取压成一行观测。口径与页面/买点告警一致（截尾均值优先）。"""
     fetched = str(record.get("fetched_at") or "")[:10]
     stats = record.get("broker_stats") or {}
+    cross = record.get("cross_check") or {}
+    rng = record.get("range_agreement") or {}
     years: dict = {}
     for year, est in (record.get("estimates") or {}).items():
         if not str(year).endswith("E"):
@@ -1079,13 +1081,174 @@ def build_history_observation(record: dict) -> dict:
         profit = bs.get("preferred_value")
         if profit is None:
             profit = (est or {}).get("profit_yuan")
+        cc = (cross.get(year) or {}).get("profit") or {}
         years[year] = {
             "profit": profit,
             "revenue": (est or {}).get("revenue_yuan"),
             # 机构数变化本身是信号——新增覆盖常伴随预期跳变
             "count": bs.get("count"),
+            # 状态存进历史，供「只在变化时告警」比对。
+            # ★缺失记 None 而不是 CONFIRMED——港股无跨源，
+            # 把「没有」记成「已确认」会让恢复判断凭空产生。
+            "verdict": cc.get("verdict"),
+            "range_verdict": (rng.get(year) or {}).get("verdict"),
         }
     return {"as_of": fetched, "years": years}
+
+
+# ── 只在状态变化时告警 ────────────────────────────────────────────────────────
+#
+# 2026-08-09 验证告警通道时发现三个问题：
+#   ① 页面把 `SAMPLE_DIVERGENT` 当问题显示，告警却不认（只看 cross_check）——
+#      同一套数据两种口径。
+#   ② 直接把它加进告警会制造噪音：长鑫的样本分歧是**持续状态**（就是只有 4 家覆盖），
+#      改周频后每周一都收同一封，两周后这个告警就会被无视、等于自我废弃。
+#   ③ 告警只说「请留意」，没说该怎么办，也没链接回研报页。
+#
+# 解法是比对上一次观测的状态，只在**变化**时告警。
+
+_BAD_CROSS = {"DIVERGENT"}
+_BAD_RANGE = {"SAMPLE_DIVERGENT"}
+
+
+def _year_problem(entry: dict) -> str | None:
+    """该年当前是否处于「有问题」状态，返回问题名；无问题返回 None。"""
+    if (entry.get("verdict") or "") in _BAD_CROSS:
+        return "两源背离"
+    if (entry.get("range_verdict") or "") in _BAD_RANGE:
+        return "两源样本分歧"
+    return None
+
+
+def verdict_transitions(snapshot_key: str, record: dict, data_dir: pathlib.Path,
+                        page: str | None = None) -> list:
+    """与上一次观测比对，返回发生**状态变化**的年份。
+
+    - CONFIRMED → DIVERGENT：`worsened`
+    - DIVERGENT → CONFIRMED：`recovered`（恢复同样值得知道）
+    - 持续有问题 / 持续正常：静默
+    - 无历史且当前有问题：`first_seen`（报一次，之后转为持续状态便不再打扰）
+    """
+    cur_obs = build_history_observation(record)
+
+    # ★取历史**最后一条**，含同日条目。
+    # 本函数在 write_and_deploy 之前调用，所以文件里的最后一条必然是「上一次的状态」，
+    # 无论它是昨天还是今天早些时候写的。
+    # 初版曾「跳过同日条目」（怕跟自己比），实跑立刻暴露反效果：同一天第二次跑时
+    # 会跳过上次刚写的状态、退回到更早那条旧格式记录（无 verdict 字段），
+    # 于是每次都判成「新出现」并重复发邮件——正是本次要消除的噪音。
+    prev: dict = {}
+    path = data_dir / f"{snapshot_key}-consensus-history.jsonl"
+    if path.exists():
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("as_of"):
+                rows.append(r)
+        if rows:
+            rows.sort(key=lambda r: r.get("as_of") or "")
+            prev = rows[-1].get("years") or {}
+
+    page = page or record.get("page") or ""
+    out = []
+    for year, entry in (cur_obs.get("years") or {}).items():
+        now_bad = _year_problem(entry)
+        was_bad = _year_problem(prev.get(year) or {}) if prev else None
+        if not prev:
+            if now_bad:
+                out.append({"name": record.get("name"), "year": year, "kind": "first_seen",
+                            "what": now_bad, "detail": _transition_detail(record, year),
+                            "page": page})
+            continue
+        if now_bad and not was_bad:
+            out.append({"name": record.get("name"), "year": year, "kind": "worsened",
+                        "what": now_bad, "detail": _transition_detail(record, year),
+                        "page": page})
+        elif was_bad and not now_bad:
+            out.append({"name": record.get("name"), "year": year, "kind": "recovered",
+                        "what": was_bad, "detail": "两源已恢复一致", "page": page})
+    return out
+
+
+def _transition_detail(record: dict, year: str) -> str:
+    cc = ((record.get("cross_check") or {}).get(year) or {}).get("profit") or {}
+    ra = (record.get("range_agreement") or {}).get(year) or {}
+    if (cc.get("verdict") or "") in _BAD_CROSS:
+        return (f"同花顺 {_fmt_yi(cc.get('primary'))} vs 东财 {_fmt_yi(cc.get('secondary'))}"
+                f"（{cc.get('diff_pct'):+.1f}%）")
+    if (ra.get("verdict") or "") in _BAD_RANGE:
+        return f"两源预测区间仅重叠 {ra.get('overlap_pct')}%"
+    return ""
+
+
+def build_transition_alert_html(transitions: list, fetched_at: str) -> str | None:
+    """状态变化 → 告警正文。无变化返回 None（不发空邮件）。
+
+    与旧版的区别：分「新出现」与「已恢复」两组、**写清下一步该做什么**、
+    并链回研报页——原文只说「请留意」，读者不知道要干什么。
+    """
+    if not transitions:
+        return None
+    import html as _html
+
+    # 视界内/外分组：用户 2026-08-05 定「2028E 太远，看一年半够了」。
+    # 视界外的背离仍是数据质量信号（值得记录），但混在一起会让读者第一反应是
+    # 「2028 我不看」，从而连视界内的一起忽略。故单独分组并标注。
+    HORIZON = ("2026E", "2027E")
+    worsened = [t for t in transitions
+                if t["kind"] in ("worsened", "first_seen") and t["year"] in HORIZON]
+    beyond = [t for t in transitions
+              if t["kind"] in ("worsened", "first_seen") and t["year"] not in HORIZON]
+    recovered = [t for t in transitions if t["kind"] == "recovered"]
+
+    def _rows(items):
+        return "".join(
+            "<tr>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>"
+            f"{'<a href=\"https://docs.sinostor.com.cn' + _html.escape(t['page']) + '\">' if t.get('page') else ''}"
+            f"{_html.escape(str(t.get('name') or ''))}"
+            f"{'</a>' if t.get('page') else ''}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{_html.escape(t['year'])}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{_html.escape(t['what'])}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{_html.escape(t.get('detail') or '')}</td>"
+            "</tr>" for t in items)
+
+    parts = ["<html><body style='font-family:sans-serif'>",
+             f"<h3>一致预期状态变化（{_html.escape(fetched_at[:10])}）</h3>",
+             "<p style='color:#666;font-size:13px'>只在状态<b>发生变化</b>时通知；"
+             "持续存在的分歧不重复打扰。</p>"]
+    if worsened:
+        parts += ["<h4>新出现的问题</h4>",
+                  "<table style='border-collapse:collapse;font-size:13px'>"
+                  "<tr><th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>标的</th>"
+                  "<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>年度</th>"
+                  "<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>类型</th>"
+                  "<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>详情</th></tr>",
+                  _rows(worsened), "</table>"]
+    if beyond:
+        parts += ["<h4 style='color:#888'>视界外（2028E 及以后，仅供参考）</h4>",
+                  "<p style='color:#888;font-size:12px;margin:0 0 6px'>"
+                  "这些年份不参与本页估值判断（一年半视界），列出仅作数据质量记录。</p>",
+                  "<table style='border-collapse:collapse;font-size:12.5px;opacity:.75'>",
+                  _rows(beyond), "</table>"]
+    if recovered:
+        parts += ["<h4>已恢复</h4>",
+                  "<table style='border-collapse:collapse;font-size:13px'>",
+                  _rows(recovered), "</table>"]
+    parts += [
+        "<p style='color:#666;font-size:12px;margin-top:14px'><b>下一步</b>："
+        "点标的名进研报页，看顶部「一致预期口径与可信度」一栏——"
+        "那里列出覆盖机构数、统计口径与两源重叠度。若该标的正准备建仓或加仓，"
+        "建议先<b>人工核对一份原始研报</b>再用其 PE/PEG；若只是持仓观察，记录即可。</p>",
+        "<p style='color:#999;font-size:11px'>由 update_research_consensus.py 自动发出。</p>",
+        "</body></html>"]
+    return "".join(parts)
 
 
 def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> pathlib.Path:
@@ -1215,6 +1378,7 @@ def main() -> int:
     errors: list[str] = []
     flagged_all: list[tuple[str, dict]] = []
     divergent_all: list[tuple] = []
+    transitions_all: list[dict] = []
     skipped_hk: list[str] = []
 
     for stock in stocks:
@@ -1322,6 +1486,13 @@ def main() -> int:
                 record["brokers"] = em.get("brokers")
                 record["broker_stats"] = em.get("broker_stats")
 
+            # ★必须在 write_and_deploy 之前：写盘会把今天的观测 append 进历史，
+            # 之后再比对就是跟自己比。（verdict_transitions 内部也会跳过同日条目，
+            # 双保险——这类顺序依赖最容易在后人重构时被打乱。）
+            transitions_all.extend(
+                verdict_transitions(stock["snapshot_key"], record, DOCS_DATA,
+                                    page=stock.get("page")))
+
             if not args.dry_run:
                 write_and_deploy(stock["snapshot_key"], record)
 
@@ -1366,14 +1537,26 @@ def main() -> int:
                 f"{_fmt_yi(d['latest'])}  ({d['delta_pct']:+.1f}%)"
             )
 
-    if divergent_all and not args.dry_run and not args.no_email:
-        html = build_divergence_alert_html(
-            [{"name": n, "year": y, "field": f, **it} for n, y, f, it in divergent_all],
-            fetched_at,
-        )
+    # 告警改为**状态变化驱动**（2026-08-09）：持续存在的分歧不重复打扰，
+    # 否则长鑫那种「就是只有 4 家覆盖」的标的会每周发同一封，两周后就被无视。
+    if transitions_all:
+        print(f"\n=== 状态变化 {len(transitions_all)} 项 ===")
+        for tr in transitions_all:
+            mark = {"worsened": "↓新出现", "recovered": "↑已恢复",
+                    "first_seen": "·首次观测"}.get(tr["kind"], tr["kind"])
+            print(f"  {mark}  {tr['name']} {tr['year']} {tr['what']}　{tr.get('detail') or ''}")
+    else:
+        print("\n=== 状态无变化（持续分歧不重复告警）===")
+
+    if transitions_all and not args.dry_run and not args.no_email:
+        html = build_transition_alert_html(transitions_all, fetched_at)
         if html:
+            n_bad = sum(1 for t in transitions_all
+                        if t["kind"] != "recovered" and t["year"] in ("2026E", "2027E"))
+            subj = (f"[一致预期] 视界内新出现 {n_bad} 项"
+                    f"（共 {len(transitions_all)} 项变化）— {fetched_at[:10]}")
             try:
-                send_divergence_alert(html, f"[一致预期] 两源背离 {len(divergent_all)} 项 — {fetched_at[:10]}")
+                send_divergence_alert(html, subj)
             except Exception as e:
                 print(f"WARN: 告警邮件发送失败（{type(e).__name__}: {e}）", file=sys.stderr)
 
