@@ -25,9 +25,6 @@ from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import research_thesis_drift as thesis  # noqa: E402  同目录模块，脚本方式运行时 sys.path 未必含本目录
-
 REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 STOCKS_FILE = REPO_DIR / "config" / "research_stocks.json"
 PEERS_FILE = REPO_DIR / "config" / "research_peers.json"
@@ -253,10 +250,7 @@ def collect_stale(today: date) -> list:
     return stale
 
 
-def build_html(stale: list, today: date, thesis_html: str = "") -> str:
-    if not stale:
-        # 只有正文告警时不要摆一张空表——空表会让人以为数据也出问题了
-        return ("<html><body style='font-family:sans-serif'>" + thesis_html + "</body></html>")
+def build_html(stale: list, today: date) -> str:
     rows = "".join(
         f"<tr><td style='padding:6px 10px;border-bottom:1px solid #eee'>{r['file']}</td>"
         f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r['issue']}</td></tr>"
@@ -280,7 +274,6 @@ def build_html(stale: list, today: date, thesis_html: str = "") -> str:
         f"{rows}</table>"
         f"<p style='color:#888;font-size:12px'>阈值：snapshot/peers-market &gt; {SNAPSHOT_MAX_DAYS} 天，"
         f"financials &gt; {FINANCIALS_MAX_DAYS} 天。由 research-data-health cron 每日检查。</p>"
-        + thesis_html +
         "</body></html>"
     )
 
@@ -289,32 +282,22 @@ def main() -> int:
     today = datetime.now(BJT).date()
     stale = collect_stale(today)
 
-    # 研报正文的估值结论是否已被现价推翻（未决问题 ③）。与文件陈旧是两类问题，
-    # 但共用这班 cron 与这封邮件——用户已提过 cron 数量偏多，不再新开一班。
-    findings = thesis.collect()
-    changed, new_state = thesis.transitions(findings, thesis.load_state())
-    thesis.save_state(new_state)
-    thesis_html = thesis.build_html(changed, today)
-
-    if not stale and not changed:
-        print(f"OK — 所有研报数据新鲜、正文结论与现价一致（检查于 {today} BJT）")
+    # 研报正文过时告警已于 2026-08-10 停用（用户：「现在意义不大」）。
+    # 背景：它是为了发现「正文的估值判断已被现价推翻」而建的，而当天做的两件事
+    # 让它失去了对象——narrative 周更 agent 删除后正文不再被自动改写；
+    # 旭创那类真正过时的结论段直接删掉了（没有会过时的结论，就没有过时可查）。
+    # 其余各页的估值结论均带显式日期，读者看日期即知新旧。
+    if not stale:
+        print(f"OK — 所有研报数据新鲜（检查于 {today} BJT）")
         return 0
 
     print(f"STALE — {len(stale)} 个数据文件陈旧:")
     for r in stale:
         print(f"  {r['file']}: {r['issue']}")
-    for f in changed:
-        print(f"  THESIS {f['name']}: {f['what']} — {f['detail']}")
-
-    bits = []
-    if stale:
-        bits.append(f"{len(stale)} 个文件陈旧")
-    if changed:
-        bits.append(f"{len(changed)} 份研报正文与现价不一致")
     env = _load_env()
     try:
-        _send_email(env, f"[研报数据告警] {'、'.join(bits)}（{today}）",
-                    build_html(stale, today, thesis_html))
+        _send_email(env, f"[研报数据告警] {len(stale)} 个文件陈旧（{today}）",
+                    build_html(stale, today))
     except Exception as e:  # noqa: BLE001
         print(f"ERROR 发送告警邮件失败: {e}", file=sys.stderr)
         return 1
