@@ -102,8 +102,22 @@ class TestPriority:
 
         assert got == "major"
 
-    def test_announcement_never_classified_technical(self):
-        """公告里不会有龙虎榜；即便标题含「资金」也不该掉进技术面层。"""
+    def test_major_beats_all_other_rules(self):
+        """★大事规则最先判，避免重磅被其它规则先截走。
+
+        这条用例验证的是『大事优先』这个优先级，不验证『公告不进技术面层』。
+        那个标题含『回购』会被 _MAJOR 先命中，走不到 is_announcement 的守卫。
+        """
         got = nr.classify(ann("关于取得金融机构股票回购贷款承诺函的公告"))
 
         assert got in ("major", "substantive")
+
+    def test_announcement_guard_blocks_technical_layer(self):
+        """★is_announcement 守卫确保公告不进技术面层。
+
+        即便标题含『主力资金』这类技术面关键词，如果是公告，
+        也应该返回 substantive 而非 technical。这条守卫被删掉时本测试会红。
+        """
+        got = nr.classify(ann("关于公司股票主力资金净流入情况的说明公告"))
+
+        assert got == "substantive"
