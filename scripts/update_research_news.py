@@ -12,6 +12,7 @@
 而公告不必攒：日期区间接口一次就给全，攒反而会积累一份可能已经歪掉的副本。
 """
 
+import html
 import json
 import os
 import shutil
@@ -111,24 +112,41 @@ def parse_hkex_rows(rows: list[dict]) -> list[dict]:
 
     ★日期是 DD/MM/YYYY。弄反会让全部条目掉出 30 天窗口——静默失败，页面只是空着。
     ★SHORT_TEXT 是官方分类（月報表 / 公告及通告 - [配售]），比猜标题可靠，
-      带进 category 供 classify() 优先使用。
+      带进 category 供 classify() 优先使用；它还带 HTML 实体（如 `&#x2f;` 表示
+      `/`），不 unescape 会原样落盘，Task 5 若直接渲染就会露出乱码。
+    ★日期解析失败的行直接丢弃会让公告数「悄悄变少」——与「窗口内真的只有这些」
+      不可区分（Task 3 那条 Critical 的同类问题）。丢弃条数 >0 时打 WARN。
     """
     out = []
+    dropped = 0
+    sample = None
     for r in rows or []:
         raw_date = str(r.get("DATE_TIME") or "").strip()
         try:
             d = datetime.strptime(raw_date.split()[0], "%d/%m/%Y").strftime("%Y-%m-%d")
         except (ValueError, IndexError):
+            dropped += 1
+            if sample is None:
+                sample = raw_date
             continue
         link = str(r.get("FILE_LINK") or "").strip()
+        category = html.unescape(str(r.get("SHORT_TEXT") or "").replace("<br/>", "")).strip()
         out.append({
             "kind": "announcement",
             "title": str(r.get("TITLE") or "").strip(),
             "date": d,
             "url": (_HKEX_BASE + link) if link.startswith("/") else link,
-            "category": str(r.get("SHORT_TEXT") or "").replace("<br/>", "").strip(),
+            "category": category,
         })
+    if dropped:
+        print(f"WARN: hkex 日期解析失败，丢弃 {dropped} 条（样例 DATE_TIME={sample!r}）",
+              file=sys.stderr)
     return out
+
+
+def _hkex_truncated(outer: dict) -> bool:
+    """`hasNextRow` 为真表示 rowRange=100 截断了结果，近 30 天实际条数可能更多。"""
+    return outer.get("hasNextRow") in (True, "true", "True", "Y", "y", "1", 1)
 
 
 def fetch_hkex_announcements(stock_id: str, days: int = WINDOW_DAYS) -> list[dict]:
@@ -144,7 +162,23 @@ def fetch_hkex_announcements(stock_id: str, days: int = WINDOW_DAYS) -> list[dic
               "t2code": "-2", "rowRange": "100", "lang": "ZH"}
     r = requests.get(_HKEX_SEARCH, params=params, headers=_HKEX_HEADERS, timeout=30)
     r.raise_for_status()
-    return parse_hkex_rows(json.loads(json.loads(r.text)["result"]))
+    outer = json.loads(r.text)
+    if _hkex_truncated(outer):
+        print(f"WARN: hkex[{stock_id}] rowRange=100 已截断（recordCnt="
+              f"{outer.get('recordCnt')!r}），实际条数可能更多", file=sys.stderr)
+    return parse_hkex_rows(json.loads(outer["result"]))
+
+
+def hk_yf_ticker(symbol: str) -> str:
+    """港股代码 → yfinance ticker。必须补足到 4 位前导零。
+
+    ★`symbol.lstrip('0')` 只在「去零后仍 ≥4 位」时碰巧对（如智谱 02513 →
+    2513.HK）。对腾讯 00700 会推导成 700.HK，汇丰 00005 会推导成 5.HK——
+    都是错的（正确是 0700.HK / 0005.HK）。yfinance 对错误 ticker **不抛异常，
+    静默返回空 news**，池子里将来加入这类代码只会得到一个空新闻层，没有任何
+    告警可查。用 `int()` 往返 + 补零，对任意位数代码都稳。
+    """
+    return f"{int(symbol):04d}.HK"
 
 
 def fetch_yf_news(ticker: str) -> list[dict]:
@@ -340,8 +374,7 @@ def main() -> int:
                         anns = None
                         errors.append(f"{key}:公告:{type(e).__name__}")
                 try:
-                    fresh = fetch_yf_news(s.get("yf_ticker")
-                                          or f"{s['symbol'].lstrip('0')}.HK")
+                    fresh = fetch_yf_news(s.get("yf_ticker") or hk_yf_ticker(s["symbol"]))
                 except Exception as e:  # noqa: BLE001
                     print(f"WARN: [{key}] yfinance 新闻失败: {type(e).__name__}: {e}",
                           file=sys.stderr)

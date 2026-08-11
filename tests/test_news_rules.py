@@ -131,6 +131,83 @@ def _a(title, date):
             "url": "https://x/" + date + title[:4], "category": None}
 
 
+class TestHkMajorTraditional:
+    """★港股披露易公告是繁体，_MAJOR 原为纯简体正则，实测「股份購回」「盈利警告」
+    「業績預告」「須予披露的交易」等 HK 常用大事标题全部漏判到 substantive——
+    池子里唯一的港股智谱「重要事项」层因此实质失效。02513 抓到的公告目前都不是
+    大事，标题取自 HKEX 标准公告用语（brief 列出的清单）。"""
+
+    def test_share_repurchase_traditional(self):
+        assert nr.classify(ann("建議股份購回一般性授權")) == "major"
+
+    def test_profit_warning(self):
+        assert nr.classify(ann("盈利警告")) == "major"
+
+    def test_earnings_forecast_traditional(self):
+        assert nr.classify(ann("截至二零二六年六月三十日止年度之業績預告")) == "major"
+
+    def test_earnings_flash_traditional(self):
+        assert nr.classify(ann("二零二六年第二季度業績快報")) == "major"
+
+    def test_share_reduction_traditional(self):
+        assert nr.classify(ann("關於主要股東減持股份的公告")) == "major"
+
+    def test_share_accumulation_already_matched(self):
+        """增持 简繁同形，正则未改动本已可命中——补测试锁定行为，不算本轮新增。"""
+        assert nr.classify(ann("董事會關於董事增持股份的公告")) == "major"
+
+    def test_discloseable_transaction(self):
+        assert nr.classify(ann("須予披露的交易")) == "major"
+
+    def test_connected_transaction(self):
+        assert nr.classify(ann("持續關連交易")) == "major"
+
+    def test_acquisition_traditional(self):
+        assert nr.classify(ann("有關收購目標公司之非常重大收購事項")) == "major"
+
+    def test_merger_traditional(self):
+        assert nr.classify(ann("有關建議合併之公告")) == "major"
+
+    def test_suspension_already_matched(self):
+        """停牌 简繁同形——补测试锁定行为，不算本轮新增。"""
+        assert nr.classify(ann("停牌")) == "major"
+
+    def test_resumption_traditional(self):
+        assert nr.classify(ann("復牌")) == "major"
+
+    def test_litigation_traditional(self):
+        assert nr.classify(ann("有關訴訟之最新進展")) == "major"
+
+    def test_arbitration_already_matched(self):
+        """仲裁 简繁同形——补测试锁定行为，不算本轮新增。"""
+        assert nr.classify(ann("有關仲裁程序之公告")) == "major"
+
+    def test_winding_up_traditional(self):
+        assert nr.classify(ann("清盤呈請")) == "major"
+
+    def test_a_share_behavior_unchanged(self):
+        """★不该破坏 A 股既有判定：这条含「关联交易」（简体，未被本轮加入
+        _MAJOR）且含「核查意见」，本应走 _PROCEDURAL，不能因繁体新增被带偏。"""
+        got = nr.classify(ann(
+            "中国国际金融股份有限公司关于苏州盛科通信股份有限公司"
+            "增加2026年度日常关联交易预计额度的核查意见"))
+
+        assert got == "procedural"
+
+
+class TestHkTechnicalTraditional:
+    """低优先级（港股新闻多为英文），但补几个明显的繁体技术面词，避免漏判。"""
+
+    def test_dragon_tiger_list_traditional(self):
+        assert nr.classify(news("騰訊控股龍虎榜資金流向")) == "technical"
+
+    def test_northbound_capital_traditional(self):
+        assert nr.classify(news("北向資金連續三日淨流入")) == "technical"
+
+    def test_limit_up_traditional(self):
+        assert nr.classify(news("多隻港股今日漲停")) == "technical"
+
+
 class TestGroupEvents:
     """★实测三环集团一次回购产生 6 条公告，不聚合会在列表里连续刷屏。"""
 

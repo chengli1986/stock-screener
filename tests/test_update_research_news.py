@@ -298,3 +298,87 @@ class TestHkClassificationEndToEnd:
         subs = [g for g in p["groups"] if g["layer"] == "substantive"]
 
         assert subs and "配售" in subs[0]["items"][0]["title"]
+
+
+# ── 港股：审查 Finding 1 — yfinance ticker 推导 ─────────────────────────────
+#
+# ★`symbol.lstrip('0')` 只在「去零后仍 ≥4 位」时碰巧对。审查者实测：
+# 腾讯 00700 → lstrip 推导 700.HK（错，应为 0700.HK）；汇丰 00005 → 5.HK
+# （错，应为 0005.HK）；yfinance 对错误 ticker 不抛异常、静默返回空 news，
+# 池子里将来加入这类代码只会得到一个空新闻层，没有告警可查。
+
+
+class TestHkYfTicker:
+    def test_four_digit_code_unchanged(self):
+        assert urn.hk_yf_ticker("02513") == "2513.HK"
+
+    def test_short_code_padded_not_truncated(self):
+        """★这是 Finding 1 的核心断言：lstrip('0') 会把 00700 错推成 700.HK。"""
+        assert urn.hk_yf_ticker("00700") == "0700.HK"
+
+    def test_single_digit_code_padded(self):
+        assert urn.hk_yf_ticker("00005") == "0005.HK"
+
+    def test_five_digit_code_unchanged(self):
+        assert urn.hk_yf_ticker("09988") == "9988.HK"
+
+
+# ── 港股：审查 Finding 2 — rowRange=100 截断检测 ────────────────────────────
+
+
+class TestHkexTruncationDetection:
+    def test_has_next_row_true_is_truncated(self):
+        assert urn._hkex_truncated({"hasNextRow": True, "recordCnt": 137}) is True
+
+    def test_has_next_row_string_true_is_truncated(self):
+        """披露易可能把布尔值序列化成字符串，两种形式都要认。"""
+        assert urn._hkex_truncated({"hasNextRow": "true"}) is True
+
+    def test_has_next_row_false_is_not_truncated(self):
+        assert urn._hkex_truncated({"hasNextRow": False, "recordCnt": 5}) is False
+
+    def test_missing_has_next_row_is_not_truncated(self):
+        assert urn._hkex_truncated({}) is False
+
+
+# ── 港股：审查 Finding 3 — 日期解析失败不再静默丢弃 ──────────────────────────
+#
+# ★审查者实测：3 行输入（正常 / DATE_TIME 为空 / ISO 格式）→ 输出 1 行，
+# 丢了 2 条、零提示。丢弃后公告数变少但 announcements_error 仍是 False，
+# 页面会正常显示一个不完整的列表——这是 Task 3 那条 Critical 的同类问题。
+
+
+class TestHkexMalformedRows:
+    def test_malformed_rows_skipped_not_fatal(self):
+        rows = list(TestHkexParse._ROWS) + [
+            {"DATE_TIME": "", "STOCK_CODE": "02513", "SHORT_TEXT": "x",
+             "TITLE": "空日期", "FILE_LINK": "/a"},
+            {"DATE_TIME": "2026-08-04 16:30", "STOCK_CODE": "02513", "SHORT_TEXT": "x",
+             "TITLE": "ISO格式", "FILE_LINK": "/b"},
+        ]
+
+        got = urn.parse_hkex_rows(rows)  # 不应抛异常
+
+        assert len(got) == 2  # 原 2 条正常行保留，2 条畸形行被跳过
+
+    def test_all_rows_malformed_returns_empty_not_raises(self):
+        rows = [{"DATE_TIME": "not-a-date", "TITLE": "x", "FILE_LINK": "/a"}]
+
+        assert urn.parse_hkex_rows(rows) == []
+
+
+# ── 港股：审查 Finding 4 — HTML 实体未反转义 ────────────────────────────────
+#
+# ★实测线上 02513-news.json 落盘了 "&#x2f;"（应为「/」）——目前没有页面消费
+# category 字段所以还看不见，Task 5 若改用 textContent 渲染会露出乱码。
+
+
+class TestHkexHtmlEntities:
+    def test_html_entity_unescaped_in_category(self):
+        rows = [{"DATE_TIME": "13/07/2026 08:00", "STOCK_CODE": "02513",
+                 "SHORT_TEXT": "公告及通告 - [配售 &#x2f; 根據一般性授權發行股份]<br/>",
+                 "TITLE": "完成根據一般授權配售新H股", "FILE_LINK": "/a"}]
+
+        got = urn.parse_hkex_rows(rows)
+
+        assert got[0]["category"] == "公告及通告 - [配售 / 根據一般性授權發行股份]"
