@@ -130,6 +130,14 @@ class TestNewsLayer:
         assert nr.classify(news("Bernstein starts coverage of China AI labs, favors Z.ai")) == "news"
 
 
+class TestSectorLayerOrderAndLabel:
+    def test_sector_is_last_in_layer_order(self):
+        assert nr.LAYER_ORDER[-1] == "sector"
+
+    def test_sector_label(self):
+        assert nr.LAYER_LABEL["sector"] == "板块与市场"
+
+
 class TestPriority:
     def test_major_beats_procedural(self):
         """★同时命中「回购」与「核查意见」时，大事优先——否则重磅会掉到第 4 层。"""
@@ -156,6 +164,127 @@ class TestPriority:
         got = nr.classify(ann("关于公司股票主力资金净流入情况的说明公告"))
 
         assert got == "substantive"
+
+
+# ── sector 层：新闻相关性降权 ─────────────────────────────────────────────────
+
+
+ZHIPU = {"name": "智谱", "symbol": "02513",
+         "aliases": ["Zhipu", "Z.ai", "ZhipuAI", "智谱AI"]}
+CHANGGUANG = {"name": "长光华芯", "symbol": "688048", "aliases": ["长光"]}
+SANHUAN = {"name": "三环集团", "symbol": "300408", "aliases": ["三环"]}
+
+
+class TestSectorLayer:
+    """★用户 2026-08-11 看真实页面拍板：长光华芯「相关新闻」4 条没有一条提到
+    长光华芯（全是「107只科创板股票跻身百元股阵营」这类板块级噪音）；三环 7
+    条里只有 2 条真相关；智谱 7 条里 3 条相关（2 条是 BNB 和比特币）。裁定：
+    降权到末尾的 sector 层，不删。标题全部取自 brief 里列出的当天真实抓取。
+
+    ★别名是必需的，不能只用公司名——智谱的相关新闻全是英文标题，不会出现
+    「智谱」二字。这组用例专门用真实智谱标题验证：只按「智谱」两字匹配会把
+    3 条真相关的也降权掉，这正是本组测试要守住的。
+    """
+
+    # 7 条智谱真实标题，brief 已标注哪些相关
+    def test_zhipu_bernstein_coverage_stays_in_news(self):
+        assert nr.classify(
+            news("Bernstein starts coverage of China's AI labs, favors Z.ai over Minimax"),
+            ZHIPU) == "news"
+
+    def test_zhipu_moonshot_deepseek_stays_in_news(self):
+        assert nr.classify(
+            news("China's Moonshot, Z.AI, and DeepSeek are challenging U.S. AI labs"),
+            ZHIPU) == "news"
+
+    def test_zhipu_share_sale_stays_in_news(self):
+        assert nr.classify(
+            news("Zhipu Unveils Open-Source AI as $4 Billion Share Sale Lifts Stock"),
+            ZHIPU) == "news"
+
+    def test_zhipu_tencent_workbuddy_demoted_to_sector(self):
+        assert nr.classify(
+            news("Tencent's WorkBuddy Sparks AI Turnaround Hopes After Stock Rout"),
+            ZHIPU) == "sector"
+
+    def test_zhipu_performance_gap_demoted_to_sector(self):
+        assert nr.classify(
+            news("Chinese AI Cuts U.S. Performance Gap to Record 6% in June"),
+            ZHIPU) == "sector"
+
+    def test_zhipu_bnb_demoted_to_sector(self):
+        assert nr.classify(
+            news("Binance's BNB Coin May Drop Toward $500 Next: Here's Why"),
+            ZHIPU) == "sector"
+
+    def test_zhipu_bitcoin_demoted_to_sector(self):
+        assert nr.classify(
+            news("Bitcoin Price Warning: Kimi K3-Led AI Selloff Could Push BTC Below $60K"),
+            ZHIPU) == "sector"
+
+    def test_zhipu_count_three_relevant_four_sector(self):
+        """汇总断言：7 条里恰好 3 条留 news、4 条进 sector，对应 brief 的裁定。"""
+        titles = [
+            "Bernstein starts coverage of China's AI labs, favors Z.ai over Minimax",
+            "China's Moonshot, Z.AI, and DeepSeek are challenging U.S. AI labs",
+            "Zhipu Unveils Open-Source AI as $4 Billion Share Sale Lifts Stock",
+            "Tencent's WorkBuddy Sparks AI Turnaround Hopes After Stock Rout",
+            "Chinese AI Cuts U.S. Performance Gap to Record 6% in June",
+            "Binance's BNB Coin May Drop Toward $500 Next: Here's Why",
+            "Bitcoin Price Warning: Kimi K3-Led AI Selloff Could Push BTC Below $60K",
+        ]
+        got = [nr.classify(news(t), ZHIPU) for t in titles]
+
+        assert got.count("news") == 3
+        assert got.count("sector") == 4
+
+    # 长光华芯真实标题：3 条科创板榜单新闻，一条都不提「长光」
+    def test_changguang_stock_price_ranking_demoted(self):
+        assert nr.classify(news("23只科创板股融资余额增加超5000万元"), CHANGGUANG) == "sector"
+
+    def test_changguang_hundred_yuan_club_demoted(self):
+        assert nr.classify(news("107只科创板股票跻身百元股阵营"), CHANGGUANG) == "sector"
+
+    def test_changguang_average_price_demoted(self):
+        assert nr.classify(news("科创板平均股价52.63元，107股股价超百元"), CHANGGUANG) == "sector"
+
+    # 三环真实标题：2 条含「三环集团」，真相关，留在原规则判定的层
+    def test_sanhuan_placing_stays_relevant(self):
+        got = nr.classify(
+            news("三环集团部分行使超额配股权，预计募资8.79亿港元"), SANHUAN)
+
+        assert got != "sector"
+
+    def test_sanhuan_board_reshuffle_stays_relevant(self):
+        got = nr.classify(news("三环集团完成董事会换届：马艳红为总经理"), SANHUAN)
+
+        assert got != "sector"
+
+    # 技术面 vs sector 的优先级：既不提公司名、又命中技术面正则的新闻 → sector
+    def test_technical_looking_headline_without_company_name_goes_to_sector_not_technical(self):
+        """★brief 给的例子：「电子行业资金流出榜」既不含长光华芯的别名，又命中
+        技术面正则（'资金\\S{0,6}流出'）。归 sector 而不是 technical——判定顺序
+        是先查相关性，不相关直接进 sector，不再往下走技术面判断。"""
+        got = nr.classify(news("电子行业资金流出榜：寒武纪、中微公司等净流出资金居前"),
+                          CHANGGUANG)
+
+        assert got == "sector"
+
+    # 公告一律不参与 sector 判定，即便不提公司名
+    def test_announcement_never_demoted_to_sector_even_without_company_name(self):
+        """★『只对新闻生效，公告一律不参与』——公告是本公司自己发的，天然相关，
+        哪怕标题本身没写出公司名（如巨潮标准格式的董事会公告）也不该被降权。"""
+        got = nr.classify(ann("关于召开2026年第三次临时股东会的通知"), CHANGGUANG)
+
+        assert got != "sector"
+
+    # 向后兼容：company=None 时行为与新增 sector 层之前完全一致
+    def test_company_none_never_produces_sector(self):
+        """★接口契约：`company` 默认 None，行为与现在完全一致——不会产出
+        sector，Task 1/2/4 的既有测试因此一条都不用改。"""
+        got = nr.classify(news("Tencent's WorkBuddy Sparks AI Turnaround Hopes"))
+
+        assert got != "sector"
 
 
 # ── 同事件聚合 ───────────────────────────────────────────────────────────────

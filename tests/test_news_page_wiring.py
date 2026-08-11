@@ -40,11 +40,14 @@ NODE = shutil.which("node")
 skip_no_node = pytest.mark.skipif(NODE is None, reason="node 不在 PATH 上，跳过真实渲染测试")
 
 
-def render(json_path, patch=None, accord_items=None, sect_nums=None, click=False):
+def render(json_path, patch=None, accord_items=None, sect_nums=None, click=False,
+          click_layer=None):
     """调用 render_news_cli.js，真的用 node vm 跑一遍 report-news.js，返回解析后的结果 dict。
 
     这是本文件里唯一「看真实产出」的入口——所有行为性断言都必须走这里，
     不能退回到对 report-news.js 源码文本做字符串匹配。
+
+    ``click_layer``：Task 7 新增，点击某一层（如 "procedural"）的折叠标题按钮。
     """
     args = [NODE, str(CLI), str(json_path)]
     if patch is not None:
@@ -55,6 +58,8 @@ def render(json_path, patch=None, accord_items=None, sect_nums=None, click=False
         args += ["--sect-nums", ",".join(sect_nums)]
     if click:
         args += ["--click"]
+    if click_layer is not None:
+        args += ["--click-layer", click_layer]
     r = subprocess.run(args, capture_output=True, text=True, timeout=15)
     assert r.returncode == 0, f"render_news_cli.js 非 0 退出: {r.stdout} {r.stderr}"
     out = json.loads(r.stdout)
@@ -240,6 +245,95 @@ def test_group_members_are_reachable_in_output():
     assert member_title in out["html"]
     assert 'class="rn-members"' in out["html"]
     assert 'rn-more-btn' in out["html"]
+
+
+# ── Task 7：procedural / sector 默认折叠 ────────────────────────────────────
+#
+# ★这个组件的测试必须是行为测试，不能是源码文本断言——上一轮教训见文件头。
+# 下面用 render_news_cli.js 新增的 `layers` 字段（真实 <ul> 的 classList 状态）
+# 和 `--click-layer` 断言，不对 report-news.js 源码做字符串匹配。
+
+_ALL_LAYERS_PATCH = {
+    "groups": [
+        {"layer": "major", "label": "重要事项",
+         "items": [{"kind": "announcement", "title": "大事一条", "date": "2026-08-10",
+                    "group_count": 1}]},
+        {"layer": "substantive", "label": "公司公告",
+         "items": [{"kind": "announcement", "title": "公告一条", "date": "2026-08-10",
+                    "group_count": 1}]},
+        {"layer": "news", "label": "相关新闻",
+         "items": [{"kind": "news", "title": "新闻一条", "date": "2026-08-10",
+                    "group_count": 1}]},
+        {"layer": "procedural", "label": "程序性文件",
+         "items": [{"kind": "announcement", "title": "程序一", "date": "2026-08-10",
+                    "group_count": 1},
+                   {"kind": "announcement", "title": "程序二", "date": "2026-08-09",
+                    "group_count": 1}]},
+        {"layer": "technical", "label": "交易与资金面",
+         "items": [{"kind": "news", "title": "龙虎榜一条", "date": "2026-08-10",
+                    "group_count": 1}]},
+        {"layer": "sector", "label": "板块与市场",
+         "items": [{"kind": "news", "title": "板块一", "date": "2026-08-10",
+                    "group_count": 1},
+                   {"kind": "news", "title": "板块二", "date": "2026-08-09",
+                    "group_count": 1}]},
+    ],
+}
+
+
+@skip_no_node
+def test_procedural_and_sector_collapsed_by_default_others_expanded():
+    """★用户 2026-08-11 拍板：procedural 默认收起（占篇幅、淡化实质内容）；
+    sector 层体量同样大、价值更低，同一条理由适用，同样默认收起
+    （controller 判定，已在报告里向用户说明）。其余四层保持展开。"""
+    out = render(SAMPLE_JSON, patch=_ALL_LAYERS_PATCH)
+
+    assert out["layers"]["procedural"]["open"] is False
+    assert out["layers"]["sector"]["open"] is False
+    assert "rn-collapsible" in out["layers"]["procedural"]["className"]
+    assert "rn-collapsible" in out["layers"]["sector"]["className"]
+
+    for layer in ("major", "substantive", "news", "technical"):
+        assert "rn-collapsible" not in out["layers"][layer]["className"], (
+            f"{layer} 不该带折叠类——用户只要求 procedural/sector 默认收起")
+
+    # 折叠层的条目内容仍然真实渲染在输出里，只是靠 CSS class 收起，不是没渲染。
+    assert "程序一" in out["html"]
+    assert "板块一" in out["html"]
+
+
+@skip_no_node
+def test_procedural_header_shows_count_and_collapsed_arrow():
+    out = render(SAMPLE_JSON, patch=_ALL_LAYERS_PATCH)
+
+    assert "程序性文件（共 2 条）" in out["html"]
+    assert "板块与市场（共 2 条）" in out["html"]
+
+
+@skip_no_node
+def test_click_on_procedural_header_expands_only_procedural():
+    """点击 procedural 的标题行后该层展开；没点的 sector 仍然保持收起——
+    证明每层的 click 监听各自独立，不是全局一个开关。"""
+    before = render(SAMPLE_JSON, patch=_ALL_LAYERS_PATCH)
+    after = render(SAMPLE_JSON, patch=_ALL_LAYERS_PATCH, click_layer="procedural")
+
+    assert before["layers"]["procedural"]["open"] is False
+    assert after["layers"]["procedural"]["open"] is True
+    assert after["layers"]["sector"]["open"] is False
+
+
+@skip_no_node
+def test_procedural_click_toggles_using_real_fixture_data():
+    """不用手造 patch，直接用 300308 真实抓取里的 procedural 层验证同样的行为。"""
+    data = json.loads(SAMPLE_JSON.read_text(encoding="utf-8"))
+    assert any(g["layer"] == "procedural" for g in data["groups"]), \
+        "夹具数据里没有 procedural 层了，换一只股票的样例"
+
+    before = render(SAMPLE_JSON)
+    after = render(SAMPLE_JSON, click_layer="procedural")
+
+    assert before["layers"]["procedural"]["open"] is False
+    assert after["layers"]["procedural"]["open"] is True
 
 
 def test_no_hardcoded_yellow_hex_left():

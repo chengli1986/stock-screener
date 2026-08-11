@@ -306,13 +306,20 @@ def _cutoff(now: str | None, days: int) -> str:
 
 
 def build_payload(key: str, name: str, announcements: list[dict] | None,
-                  news: list[dict], now: str | None = None) -> dict:
+                  news: list[dict], now: str | None = None,
+                  news_aliases: list[str] | None = None) -> dict:
     """分层 + 聚合 + 排序，产出页面直接消费的结构。
 
     ``announcements=None`` 是「本次抓取失败，公告状况未知」的哨兵，与
     ``announcements=[]``（抓取成功、确认窗口内 0 条）**语义不同**：前者绝不能
     写成 `announcements_empty=True`，那会让页面打印「近 30 天无公告披露」这句
     假话——真相是我们根本没拿到数据，不是公司真的没有公告。
+
+    ``news_aliases``：sector 层（板块与市场）的相关性判定用。**默认 None**
+    时不构造 company 信息、不传给 `classify()`，行为与新增 sector 层之前
+    完全一致——这样既有测试（大量调用本函数、从不传这个参数）一条不用改。
+    传入（哪怕是空列表 `[]`）才会启用相关性判定：新闻标题不含公司名/代码/
+    别名任一个，就会被降权到 sector。
     """
     cutoff = _cutoff(now, WINDOW_DAYS)
     announcements_error = announcements is None
@@ -320,9 +327,12 @@ def build_payload(key: str, name: str, announcements: list[dict] | None,
     items = [x for x in (list(ann_list) + list(news))
              if str(x.get("date") or "") >= cutoff]
 
+    company = ({"name": name, "symbol": key, "aliases": list(news_aliases)}
+               if news_aliases is not None else None)
+
     buckets: dict = {layer: [] for layer in LAYER_ORDER}
     for it in items:
-        buckets[classify(it)].append(it)
+        buckets[classify(it, company)].append(it)
 
     groups = []
     for layer in LAYER_ORDER:
@@ -428,7 +438,8 @@ def main() -> int:
                     fresh = []     # 新闻走 merge_news_history 回读历史，不会说谎
                     errors.append(f"{key}:新闻:{type(e).__name__}")
             news = merge_news_history(key, fresh, DATA_DIR)
-            payload = build_payload(key, name, anns, news)
+            payload = build_payload(key, name, anns, news,
+                                    news_aliases=s.get("news_aliases") or [])
             write_and_deploy(key, payload, DATA_DIR, DEPLOY_DATA_DIR)
             ann_str = "抓取失败" if anns is None else f"{len(anns)} 条"
             tag = "（港股）" if is_hk else ""

@@ -6,7 +6,9 @@
 > 「关于股价，资金流动，龙虎榜这些，明显属于技术分析的，我肯定是放到末尾的，
 >   我这个页面主要还是基本面分析为主的」
 
-所以五层**只排序不删除**：major > substantive > news > procedural > technical。
+所以六层**只排序不删除**：major > substantive > news > procedural > technical > sector。
+sector（板块与市场，2026-08-11 新增）放最末尾：一条新闻若标题不含公司名/代码/
+别名任何一个，判为与本公司不直接相关，降权到这层，不删除。
 
 ## 为什么公告不进技术面层
 
@@ -64,16 +66,40 @@ _TECHNICAL = re.compile(
 )
 
 
-def classify(item: dict) -> str:
-    """返回 major / substantive / news / procedural / technical 之一。
+def _mentions_company(title: str, company: dict) -> bool:
+    """标题是否含公司名 / 股票代码 / 别名之一，latin 字符不区分大小写。
 
-    判定顺序即优先级：大事最先判，避免「XX 证券关于回购的核查意见」被
-    程序性规则先截走——那会让一条重磅掉到第 4 层。
+    ★用 `in` 判断而非正则——别名里的 `Z.ai` 这类字符串若走正则，`.` 是通配符，
+    会把 `Zxai`、`Z1ai` 也算命中。全部走字符串子串匹配，`.lower()` 对中文字符
+    是恒等操作，同一次 `.lower()` 对 latin/CJK 混合标题都安全。
+    """
+    hay = title.lower()
+    needles = [company.get("name"), company.get("symbol"), *(company.get("aliases") or [])]
+    return any(n and str(n).lower() in hay for n in needles)
+
+
+def classify(item: dict, company: dict | None = None) -> str:
+    """返回 major / substantive / news / procedural / technical / sector 之一。
+
+    判定顺序即优先级：**相关性先判**（仅新闻、仅当传入 company），不相关直接
+    降权到 sector，不再走大事/程序性/技术面这些规则——一条既不提这家公司、
+    又命中技术面关键词的新闻（如「电子行业资金流出榜」），归 sector 而不是
+    technical：它连这只股票都不是在讲，比「在讲这只股票的资金流」更远。
+    这是用户 2026-08-11 拍板的判定顺序（见 news_rules 设计笔记）。
+
+    大事其次判：避免「XX 证券关于回购的核查意见」被程序性规则先截走——
+    那会让一条重磅掉到第 4 层。
+
+    ``company`` 默认 None，此时行为与新增 sector 层之前完全一致（不会产出
+    sector），这样调用方不传 company 时既有测试一条不用改。
     """
     title = str(item.get("title") or "")
     category = str(item.get("category") or "")
     is_announcement = item.get("kind") == "announcement"
     haystack = title + " " + category
+
+    if company and not is_announcement and not _mentions_company(title, company):
+        return "sector"
 
     if _MAJOR.search(haystack):
         return "major"
@@ -86,7 +112,7 @@ def classify(item: dict) -> str:
     return "news"
 
 
-LAYER_ORDER = ("major", "substantive", "news", "procedural", "technical")
+LAYER_ORDER = ("major", "substantive", "news", "procedural", "technical", "sector")
 
 LAYER_LABEL = {
     "major": "重要事项",
@@ -94,6 +120,7 @@ LAYER_LABEL = {
     "news": "相关新闻",
     "procedural": "程序性文件",
     "technical": "交易与资金面",
+    "sector": "板块与市场",
 }
 
 

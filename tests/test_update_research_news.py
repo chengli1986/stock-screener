@@ -73,6 +73,72 @@ class TestLayerOrdering:
         assert dates == sorted(dates, reverse=True)
 
 
+# ── sector 层：build_payload 的 news_aliases 接口 ───────────────────────────
+
+
+class TestNewsAliasesBackwardCompat:
+    """★brief 明确要求：`build_payload` 既有测试（本文件里大量调用、从不传
+    news_aliases）一条都不能改。默认 None 时不启用相关性判定，不会产出 sector。
+
+    这条也是 TestLayerOrdering 那组测试本身能继续通过的原因：`_ITEMS_N` 里
+    「Bernstein 首次覆盖」不含「中际旭创」或「300308」，如果默认就启用相关性
+    判定，这条新闻会被降权到 sector，`test_layers_appear_in_fixed_order` 断言
+    的 `["major","substantive","news","procedural","technical"]` 就会变成
+    多一层 sector、且 technical 不再是最后一层——那条测试没改就是最直接的证据。
+    """
+
+    def test_news_aliases_omitted_produces_no_sector_layer(self):
+        items_a = [ann("2026年半年度业绩预告", "2026-07-14")]
+        items_n = [news("Bernstein 首次覆盖", "2026-08-04")]  # 不含中际旭创/300308
+        p = urn.build_payload("300308", "中际旭创", items_a, items_n, NOW)
+
+        assert "sector" not in [g["layer"] for g in p["groups"]]
+
+    def test_news_aliases_none_explicit_same_as_omitted(self):
+        items_n = [news("Bernstein 首次覆盖", "2026-08-04")]
+        p = urn.build_payload("300308", "中际旭创", [], items_n, NOW, news_aliases=None)
+
+        assert "sector" not in [g["layer"] for g in p["groups"]]
+
+
+class TestNewsAliasesEnabled:
+    """传 news_aliases（哪怕空列表）才启用相关性判定。用长光华芯真实抓取的
+    3 条科创板榜单新闻验证——brief 原话：这 3 条『没有一条提到长光华芯』。"""
+
+    _CHANGGUANG_NEWS = [
+        news("23只科创板股融资余额增加超5000万元", "2026-08-05"),
+        news("107只科创板股票跻身百元股阵营", "2026-08-06"),
+        news("科创板平均股价52.63元，107股股价超百元", "2026-08-07"),
+    ]
+
+    def test_irrelevant_news_all_land_in_sector(self):
+        p = urn.build_payload("688048", "长光华芯", [], self._CHANGGUANG_NEWS, NOW,
+                              news_aliases=["长光"])
+
+        layers = {g["layer"]: g["items"] for g in p["groups"]}
+        assert "news" not in layers
+        assert len(layers.get("sector", [])) == 3
+
+    def test_sector_is_omitted_when_empty(self):
+        """公司名/别名都命中的新闻不该产出空的 sector 层。"""
+        p = urn.build_payload("300408", "三环集团",
+                              [], [news("三环集团完成董事会换届：马艳红为总经理", "2026-08-06")],
+                              NOW, news_aliases=["三环"])
+
+        assert "sector" not in [g["layer"] for g in p["groups"]]
+
+    def test_empty_news_aliases_list_still_enables_name_and_symbol_match(self):
+        """`news_aliases=[]`（显式空列表，不是 None）也要启用判定——只是没有
+        额外别名，退化成只按公司名 + 代码匹配。标题不含「长光华芯」「688048」，
+        也不含配置里的别名「长光」，传空列表时应该仍然降权到 sector。"""
+        p = urn.build_payload("688048", "长光华芯", [],
+                              [news("107只科创板股票跻身百元股阵营", "2026-08-05")],
+                              NOW, news_aliases=[])
+
+        layers = {g["layer"]: g["items"] for g in p["groups"]}
+        assert len(layers.get("sector", [])) == 1
+
+
 # ── 30 天窗口 ────────────────────────────────────────────────────────────────
 
 
