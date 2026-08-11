@@ -181,3 +181,59 @@ class TestFailureDoesNotClobber:
         urn.write_and_deploy("300308", {"is_empty": True, "groups": []}, tmp_path, None)
 
         assert (tmp_path / "300308-news.json").exists()
+
+
+# ── 公告抓取失败 ≠ 确认 0 条（审查 Finding 1）───────────────────────────────
+#
+# ★调用链：cninfo 抛异常 → main 接住 → 若把 anns 设为 []，则 build_payload
+# 无法区分「真的 0 条」与「没抓到」，会把 announcements_empty 写成 True，
+# 页面据此打印「近 30 天无公告披露」——这是一句假话。announcements=None 是
+# 这个区分的哨兵。
+
+
+class TestAnnouncementsFetchFailure:
+    def test_failed_fetch_sets_error_flag_not_empty_claim(self):
+        """公告抓取失败（None）+ 新闻抓取成功 → 不能说「无公告披露」。"""
+        p = urn.build_payload("688498", "源杰科技", None,
+                              [news("公司获大单", "2026-08-05")], NOW)
+
+        assert p["announcements_error"] is True
+        assert p["announcements_empty"] is False
+
+    def test_confirmed_zero_announcements_sets_empty_not_error(self):
+        """公告抓取成功、窗口内确认 0 条 → 是空态，不是错误。"""
+        p = urn.build_payload("688048", "长光华芯", [], [], NOW)
+
+        assert p["announcements_empty"] is True
+        assert p["announcements_error"] is False
+
+    def test_error_payload_does_not_overwrite_existing_file(self, tmp_path):
+        """★announcements_error 为真时，即便 payload 整体不是「空」（新闻还在），
+        也不能覆盖昨天那份含公告的好文件。"""
+        target = tmp_path / "688498-news.json"
+        target.write_text(
+            json.dumps({"groups": [{"layer": "substantive", "items": [1]}]}),
+            encoding="utf-8")
+        payload = {"is_empty": False, "announcements_error": True,
+                   "groups": [{"layer": "news", "items": [{"title": "某新闻"}]}]}
+
+        urn.write_and_deploy("688498", payload, tmp_path, None)
+
+        assert json.loads(target.read_text())["groups"][0]["layer"] == "substantive"
+
+
+# ── 历史文件里的坏行不该拖垮整只股票（审查 Finding 2）───────────────────────
+
+
+class TestHistoryCorruptRows:
+    def test_non_dict_json_row_is_skipped_not_fatal(self, tmp_path):
+        """★实测触发路径：历史 jsonl 里一行合法 JSON 但不是 dict（如裸数字），
+        `r.get("url")` 会抛 AttributeError。该行应被跳过而不是让整个调用炸掉。"""
+        path = tmp_path / "300308-news-raw.jsonl"
+        path.write_text("123\n" + json.dumps(news("A", "2026-08-01")) + "\n",
+                        encoding="utf-8")
+
+        got = urn.merge_news_history("300308", [], tmp_path, now=NOW)
+
+        assert len(got) == 1
+        assert got[0]["title"] == "A"

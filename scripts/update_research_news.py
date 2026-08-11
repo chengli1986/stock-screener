@@ -13,6 +13,7 @@
 """
 
 import json
+import os
 import shutil
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -102,20 +103,33 @@ def merge_news_history(key: str, fresh: list[dict], data_dir: Path,
     """按 url 去重追加进 `{key}-news-raw.jsonl`，回读窗口内的条目。
 
     ★窗口只影响返回值，**不删磁盘上的历史**——删了就再也拼不回更长的时间线。
+    ★这份 jsonl 全系统唯一不可重建（东财只给最新 10 条），因此写盘用
+      「写临时文件 + `os.replace()`」原子替换，绝不半路截断成坏文件。
+    ★损坏的单行只丢它自己，不静默——打 WARN 到 stderr，其余好数据全保留。
     """
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / f"{key}-news-raw.jsonl"
+    if path.is_symlink():
+        # os.replace 会把符号链接整个换成普通文件；先解析到真实路径，
+        # 后续读写都对真实文件操作，不破坏链接本身。
+        path = Path(os.path.realpath(path))
 
     rows: list[dict] = []
     seen: set = set()
     if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             line = line.strip()
             if not line:
                 continue
             try:
                 r = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                print(f"WARN: [{key}] news-raw.jsonl 第{lineno}行 JSON 解析失败，跳过: {e}",
+                      file=sys.stderr)
+                continue
+            if not isinstance(r, dict):
+                print(f"WARN: [{key}] news-raw.jsonl 第{lineno}行不是对象，跳过: {r!r}",
+                      file=sys.stderr)
                 continue
             rows.append(r)
             seen.add(r.get("url"))
@@ -129,8 +143,10 @@ def merge_news_history(key: str, fresh: list[dict], data_dir: Path,
         added += 1
     if added:
         rows.sort(key=lambda r: str(r.get("date") or ""))
-        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
-                        encoding="utf-8")
+        tmp = path.parent / f"{path.name}.tmp{os.getpid()}"
+        tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                       encoding="utf-8")
+        os.replace(tmp, path)
 
     cutoff = _cutoff(now, days)
     return [r for r in rows if str(r.get("date") or "") >= cutoff]
@@ -145,11 +161,19 @@ def _cutoff(now: str | None, days: int) -> str:
 # ── 合成 ─────────────────────────────────────────────────────────────────────
 
 
-def build_payload(key: str, name: str, announcements: list[dict],
+def build_payload(key: str, name: str, announcements: list[dict] | None,
                   news: list[dict], now: str | None = None) -> dict:
-    """分层 + 聚合 + 排序，产出页面直接消费的结构。"""
+    """分层 + 聚合 + 排序，产出页面直接消费的结构。
+
+    ``announcements=None`` 是「本次抓取失败，公告状况未知」的哨兵，与
+    ``announcements=[]``（抓取成功、确认窗口内 0 条）**语义不同**：前者绝不能
+    写成 `announcements_empty=True`，那会让页面打印「近 30 天无公告披露」这句
+    假话——真相是我们根本没拿到数据，不是公司真的没有公告。
+    """
     cutoff = _cutoff(now, WINDOW_DAYS)
-    items = [x for x in (list(announcements) + list(news))
+    announcements_error = announcements is None
+    ann_list = announcements if announcements is not None else []
+    items = [x for x in (list(ann_list) + list(news))
              if str(x.get("date") or "") >= cutoff]
 
     buckets: dict = {layer: [] for layer in LAYER_ORDER}
@@ -164,7 +188,7 @@ def build_payload(key: str, name: str, announcements: list[dict],
         rows = group_events(sorted(rows, key=lambda x: str(x.get("date") or ""), reverse=True))
         groups.append({"layer": layer, "label": LAYER_LABEL[layer], "items": rows})
 
-    ann_in_window = [a for a in announcements if str(a.get("date") or "") >= cutoff]
+    ann_in_window = [a for a in ann_list if str(a.get("date") or "") >= cutoff]
     return {
         "symbol": key,
         "name": name,
@@ -173,7 +197,9 @@ def build_payload(key: str, name: str, announcements: list[dict],
         "groups": groups,
         # ★空态要显式标出来：实测长光华芯近 30 天 0 条公告。
         # 页面据此说明「近 30 天无公告披露」，而不是留白。
-        "announcements_empty": len(ann_in_window) == 0,
+        # 但只在抓取**成功**的前提下才成立——见 announcements_error。
+        "announcements_empty": (not announcements_error) and len(ann_in_window) == 0,
+        "announcements_error": announcements_error,
         "is_empty": len(groups) == 0,
     }
 
@@ -185,12 +211,18 @@ def write_and_deploy(key: str, payload: dict, data_dir: Path,
                      deploy_dir: Path | None) -> Path | None:
     """写 `{key}-news.json` 并部署。
 
-    ★空 payload 不覆盖已有文件——抓取失败时照常写盘，会把昨天好的数据换成空壳。
+    两条「不覆盖」守卫：
+    ★ 空 payload 不覆盖已有文件——抓取失败时照常写盘，会把昨天好的数据换成空壳。
+    ★ `announcements_error` 为真也不覆盖——哪怕新闻抓取成功、payload 整体不算
+      「空」，写出去也会把 `announcements_empty` 定死成一句假话，还顺手抹掉
+      昨天那份真实的公告数据。设计文档第 6 节：「某一层抓取失败 → 不覆盖已有
+      数据」，这里补的正是「公告空但新闻不空」这个比全空常见得多的场景。
     """
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / f"{key}-news.json"
-    if payload.get("is_empty") and path.exists():
-        print(f"  [{key}] 本次无内容，保留既有文件（不覆盖）")
+    if (payload.get("is_empty") or payload.get("announcements_error")) and path.exists():
+        reason = "本次无内容" if payload.get("is_empty") else "公告抓取失败"
+        print(f"  [{key}] {reason}，保留既有文件（不覆盖）")
         return None
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8")
@@ -210,24 +242,39 @@ def main() -> int:
         name = s.get("name")
         if s.get("exchange") == "HK":
             continue          # 港股在 Task 4 接入
+        # ★整只股票包一层 try/except：一只失败不该拖垮其余——实测过历史
+        # jsonl 里一行合法 JSON 但非 dict（如裸数字 123）会让 `.get()` 抛
+        # AttributeError，若不隔离，后面的股票全部不处理。
         try:
-            anns = fetch_cninfo_announcements(s["symbol"])
+            try:
+                anns = fetch_cninfo_announcements(s["symbol"])
+            except Exception as e:  # noqa: BLE001
+                print(f"WARN: [{key}] 公告抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
+                # 哨兵 None：与「抓取成功、确认 0 条」区分，见 build_payload。
+                anns = None
+                errors.append(f"{key}:公告:{type(e).__name__}")
+            try:
+                fresh = fetch_em_news(s["symbol"])
+            except Exception as e:  # noqa: BLE001
+                print(f"WARN: [{key}] 新闻抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
+                fresh = []     # 新闻走 merge_news_history 回读历史，不会说谎
+                errors.append(f"{key}:新闻:{type(e).__name__}")
+            news = merge_news_history(key, fresh, DATA_DIR)
+            payload = build_payload(key, name, anns, news)
+            write_and_deploy(key, payload, DATA_DIR, DEPLOY_DATA_DIR)
+            ann_str = "抓取失败" if anns is None else f"{len(anns)} 条"
+            print(f"  [{key}] ✓ {name}  公告 {ann_str} / 新闻 {len(news)} 条"
+                  f"  分 {len(payload['groups'])} 层")
         except Exception as e:  # noqa: BLE001
-            print(f"WARN: [{key}] 公告抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
-            anns = []
-            errors.append(f"{key}:{type(e).__name__}")
-        try:
-            fresh = fetch_em_news(s["symbol"])
-        except Exception as e:  # noqa: BLE001
-            print(f"WARN: [{key}] 新闻抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
-            fresh = []
-            errors.append(f"{key}:{type(e).__name__}")
-        news = merge_news_history(key, fresh, DATA_DIR)
-        payload = build_payload(key, name, anns, news)
-        write_and_deploy(key, payload, DATA_DIR, DEPLOY_DATA_DIR)
-        print(f"  [{key}] ✓ {name}  公告 {len(anns)} 条 / 新闻 {len(news)} 条"
-              f"  分 {len(payload['groups'])} 层")
+            msg = f"{key}:{type(e).__name__}"
+            print(f"ERROR: [{key}] {name} FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+            errors.append(msg)
+            continue
+
     if errors:
+        print(f"\n=== FAILED ({len(errors)}) ===", file=sys.stderr)
+        for msg in errors:
+            print(f"  {msg}", file=sys.stderr)
         return 1
     return 0
 
