@@ -90,6 +90,41 @@ class TestTechnical:
         assert nr.classify(news("8月7日科创板主力资金净流入104.35亿元")) == "technical"
 
 
+class TestTechnicalCapitalFlowGaps:
+    """★2026-08-11 二次审查：肉眼查真实页面发现漏配——三环集团「相关新闻」层
+    7 条里 5 条是资金流榜单，长光华芯页 4 条里 3 条。标题全部取自当天真实
+    抓取结果。原正则只认「资金净流入/净流出」这种固定搭配，命不中下面这些。"""
+
+    def test_capital_outflow_ranking_no_jing(self):
+        """「资金流出榜」没有「净」字，也没有「资金净流出」那种固定搭配。"""
+        assert nr.classify(
+            news("电子行业资金流出榜：寒武纪、中微公司等净流出资金居前")) == "technical"
+
+    def test_net_inflow_after_the_word_capital(self):
+        """「净流入」在「资金」之后而非之前——「特大单净流入资金超」。"""
+        assert nr.classify(news("38股特大单净流入资金超2亿元")) == "technical"
+
+    def test_margin_trading_investor(self):
+        assert nr.classify(news("56股获融资客大手笔买入")) == "technical"
+
+    def test_leveraged_capital(self):
+        assert nr.classify(news("杠杆资金连续五日加仓创业板股")) == "technical"
+
+    def test_capital_outflow_with_words_in_between(self):
+        """「资金」和「流出」之间隔着「今日」，不是紧邻搭配。"""
+        assert nr.classify(news("192.08亿元资金今日流出电子股")) == "technical"
+
+    def test_announcement_guard_still_holds_after_regex_expansion(self):
+        """★补词不能误伤『公告不进技术面层』这条既有守卫。"""
+        assert nr.classify(
+            ann("关于公司股票主力资金净流入情况的说明公告")) == "substantive"
+
+    def test_buyback_and_share_increase_not_swept_into_technical(self):
+        """★不要把「回购」「增持」这类大事层关键词误纳入技术面。"""
+        assert nr.classify(ann("关于收到董事长提议回购公司股份的公告")) == "major"
+        assert nr.classify(ann("董事會關於董事增持股份的公告")) == "major"
+
+
 class TestNewsLayer:
     def test_plain_news_is_news_layer(self):
         assert nr.classify(news("Bernstein starts coverage of China AI labs, favors Z.ai")) == "news"

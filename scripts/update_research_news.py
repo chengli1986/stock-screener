@@ -26,6 +26,7 @@ CONFIG = REPO / "config" / "research_stocks.json"
 DATA_DIR = REPO.parent / "docs-site" / "data"
 DEPLOY_DATA_DIR = Path("/var/www/overview/data")
 WINDOW_DAYS = 30
+EMPTY_RESULT_PROBE_DAYS = 365
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from news_rules import LAYER_LABEL, LAYER_ORDER, classify, group_events  # noqa: E402
@@ -57,17 +58,49 @@ def call_with_timeout(fn, timeout_s: int, label: str = ""):
 
 
 def fetch_cninfo_announcements(code: str, days: int = WINDOW_DAYS) -> list[dict]:
-    """巨潮按代码 + 日期区间拉公告。港股不覆盖（巨潮 market='沪深京'）。"""
-    def _work():
+    """巨潮按代码 + 日期区间拉公告。港股不覆盖（巨潮 market='沪深京'）。
+
+    ★akshare 对**结果集为空**的窗口会抛 `KeyError`（内部试图对空 DataFrame
+    选列），而不是老老实实返回空 df——这与「函数本身坏了」在异常层面完全
+    无法区分。实测长光华芯近 30 天真的 0 条公告，遇到的正是这个 KeyError，
+    若直接当异常处理会被上层置为 `announcements_error=True`，从此再也不会
+    被判定为「确认 0 条」，`688048-news.json` 冻结在故障发生前那一版。
+
+    窄窗 KeyError 时用 `EMPTY_RESULT_PROBE_DAYS`（一年）扩窗自检一次：
+    - 扩窗**成功**（不抛异常，无论返回多少行）→ 函数对这只股票工作正常，
+      窄窗口确实是真·0 条 → 返回 `[]`
+    - 扩窗**也抛异常** → 是真的故障，原样把窄窗那个 `KeyError` 抛出，交给
+      上层置 `None` 哨兵
+
+    ⚠不要图省事把「捕获 KeyError」直接当「0 条」——那样一旦 akshare 真的
+    改了 schema（不是空结果这个已知怪癖），会静默报告 0 条，页面又开始说
+    假话，等于把这条 Critical 换个方向再犯一次。扩窗只在 KeyError 时才多
+    花一次请求，正常路径零开销。
+    """
+    def _query(window_days: int):
         import akshare as ak
 
         end = date.today()
-        start = end - timedelta(days=days)
+        start = end - timedelta(days=window_days)
         return ak.stock_zh_a_disclosure_report_cninfo(
             symbol=code, market="沪深京",
             start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"))
 
-    df = call_with_timeout(_work, 60, label=f"cninfo[{code}]")
+    try:
+        df = call_with_timeout(lambda: _query(days), 60, label=f"cninfo[{code}]")
+    except KeyError as e:
+        print(f"WARN: [{code}] cninfo 近{days}天空结果触发 akshare KeyError"
+              f"（{e}），扩窗到 {EMPTY_RESULT_PROBE_DAYS} 天自检...", file=sys.stderr)
+        try:
+            call_with_timeout(lambda: _query(EMPTY_RESULT_PROBE_DAYS), 60,
+                              label=f"cninfo-probe[{code}]")
+        except Exception as probe_err:  # noqa: BLE001
+            print(f"WARN: [{code}] 扩窗自检也失败（{type(probe_err).__name__}: "
+                  f"{probe_err}），判定为真实故障，原样抛出", file=sys.stderr)
+            raise e from probe_err
+        print(f"[{code}] 扩窗自检成功，确认近{days}天真·0条公告", file=sys.stderr)
+        return []
+
     if df is None or df.empty:
         return []
     return [{"kind": "announcement",

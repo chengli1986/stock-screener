@@ -222,6 +222,75 @@ class TestAnnouncementsFetchFailure:
         assert json.loads(target.read_text())["groups"][0]["layer"] == "substantive"
 
 
+# ── 空结果 KeyError ≠ 真故障（二次审查 问题 1）──────────────────────────────
+#
+# ★实测（不是推测）：688048 长光华芯近 30 天真的 0 条公告，akshare 对这个
+# 空结果窗口抛 KeyError（内部试图对空 DataFrame 选列）；近 90/180/365 天都
+# 能正常返回。同一只股票、同一个函数，窄窗异常、宽窗正常——异常本身无法
+# 区分「真故障」与「真的没有」。捕获 KeyError 就当 0 条会在 schema 真变了
+# 时静默报错误结论，这几条测试专门锁住「先扩窗自检，再决定」这个行为。
+
+
+class TestCninfoEmptyResultVsBrokenFetch:
+    def test_narrow_keyerror_wide_succeeds_returns_empty_not_raises(self, monkeypatch):
+        """窄窗 KeyError + 扩窗成功 → 真·0 条，返回 []，不再往上抛异常。"""
+        import akshare as ak
+
+        calls = []
+
+        def fake(symbol, market, start_date, end_date):
+            calls.append((start_date, end_date))
+            if len(calls) == 1:
+                raise KeyError(
+                    "None of [Index(['代码','简称','公告标题','公告时间',"
+                    "'announcementId','orgId'], dtype='str')] are in the [columns]")
+            import pandas as pd
+            return pd.DataFrame(columns=["代码", "简称", "公告标题", "公告时间", "公告链接"])
+
+        monkeypatch.setattr(ak, "stock_zh_a_disclosure_report_cninfo", fake)
+
+        got = urn.fetch_cninfo_announcements("688048")
+
+        assert got == []
+        assert len(calls) == 2  # 窄窗一次 + 扩窗自检一次
+
+    def test_narrow_and_wide_both_keyerror_raises(self, monkeypatch):
+        """窄窗、扩窗都 KeyError → 真的坏了，原样抛出（上层据此置 None 哨兵）。"""
+        import akshare as ak
+
+        def always_broken(symbol, market, start_date, end_date):
+            raise KeyError("schema 真的变了")
+
+        monkeypatch.setattr(ak, "stock_zh_a_disclosure_report_cninfo", always_broken)
+
+        try:
+            urn.fetch_cninfo_announcements("688048")
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("应抛出 KeyError，而不是静默返回")
+
+    def test_normal_path_does_not_trigger_probe(self, monkeypatch):
+        """★正常路径零开销：不该多打一次扩窗请求。"""
+        import akshare as ak
+
+        calls = []
+
+        def fake(symbol, market, start_date, end_date):
+            calls.append((start_date, end_date))
+            import pandas as pd
+            return pd.DataFrame([{"代码": symbol, "简称": "中际旭创",
+                                  "公告标题": "关于董事会换届的公告",
+                                  "公告时间": "2026-08-01", "公告链接": "http://x"}])
+
+        monkeypatch.setattr(ak, "stock_zh_a_disclosure_report_cninfo", fake)
+
+        got = urn.fetch_cninfo_announcements("300308")
+
+        assert len(got) == 1
+        assert len(calls) == 1  # 没有触发扩窗自检
+
+
 # ── 历史文件里的坏行不该拖垮整只股票（审查 Finding 2）───────────────────────
 
 
