@@ -72,9 +72,21 @@ def _mentions_company(title: str, company: dict) -> bool:
     ★用 `in` 判断而非正则——别名里的 `Z.ai` 这类字符串若走正则，`.` 是通配符，
     会把 `Zxai`、`Z1ai` 也算命中。全部走字符串子串匹配，`.lower()` 对中文字符
     是恒等操作，同一次 `.lower()` 对 latin/CJK 混合标题都安全。
+
+    ★2026-08-11 二审 Finding 2：港股代码带前导零，`"02513" in "...SEHK:2513..."`
+    是 False——外媒引用港股代码几乎不带前导零，这是真实假阴性（智谱自己的英文
+    通稿因此被误判 sector）。补一个去前导零的变体，但**只在去零后仍 ≥4 位时
+    才启用**，不看 `exchange` 字段（company 目前不带这个字段，两种做法二选一，
+    选这个是因为不用多传参数）：A 股代码本身没有前导零（`300408` 类）或去零后
+    很短（`000636` → `636` 只有 3 位），天然被这条阈值挡住，不会把 `636` 这种
+    短数字串也当成可信代码去匹配，误伤一堆含「636」的无关文本。
     """
     hay = title.lower()
-    needles = [company.get("name"), company.get("symbol"), *(company.get("aliases") or [])]
+    symbol = str(company.get("symbol") or "")
+    stripped = symbol.lstrip("0")
+    needles = [company.get("name"), symbol, *(company.get("aliases") or [])]
+    if len(stripped) >= 4:
+        needles.append(stripped)
     return any(n and str(n).lower() in hay for n in needles)
 
 

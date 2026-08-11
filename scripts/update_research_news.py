@@ -438,6 +438,14 @@ def main() -> int:
                     fresh = []     # 新闻走 merge_news_history 回读历史，不会说谎
                     errors.append(f"{key}:新闻:{type(e).__name__}")
             news = merge_news_history(key, fresh, DATA_DIR)
+            if "news_aliases" not in s:
+                # 2026-08-11 二审「顺带」项：新股票忘配 news_aliases 时，
+                # 相关性判定会静默启用（退化成只按公司名+代码匹配），一旦
+                # 公司名/代码在真实新闻标题里出现率低，整页可能塌成
+                # sector-only 且没有任何告警——打 WARN，不改变行为（仍然
+                # 启用判定，只是配置缺项不该悄悄发生）。
+                print(f"WARN: [{key}] config 未配置 news_aliases，"
+                      f"相关性判定退化为只按公司名+代码匹配", file=sys.stderr)
             payload = build_payload(key, name, anns, news,
                                     news_aliases=s.get("news_aliases") or [])
             write_and_deploy(key, payload, DATA_DIR, DEPLOY_DATA_DIR)

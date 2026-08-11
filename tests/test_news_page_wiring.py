@@ -137,6 +137,33 @@ def test_announcements_empty_is_worded_as_zero():
 
 
 @skip_no_node
+def test_no_news_layer_page_does_not_promise_related_news_below():
+    """★2026-08-11 二审 Finding 3：长光华芯真实数据只剩 sector 一层（news/
+    technical 都空了），但旧文案写死「下方为相关新闻」——跟前两轮修的
+    announcements_error/empty 是同一类『说了不成立的事』。用真实的
+    688048-news.json（此刻 groups 只有 sector 一层）验证不再做这个空头承诺。
+    """
+    data = json.loads(EMPTY_ANNOUNCE_JSON.read_text(encoding="utf-8"))
+    assert [g["layer"] for g in data["groups"]] == ["sector"], (
+        "夹具数据不再是『只剩 sector 一层』了，换一个仍符合这个前提的样例，"
+        "或直接用 patch 手造一份只有 sector 层的 payload")
+
+    out = render(EMPTY_ANNOUNCE_JSON)
+
+    assert "下方为相关新闻" not in out["html"]
+    assert "无公告披露" in out["html"]  # 公告那半句判断不受影响，仍然要在
+
+
+@skip_no_node
+def test_intro_does_not_hardcode_technical_as_last_layer():
+    """★同一处修复：引言曾写死「交易与资金面排在最后」，sector 上线后不再
+    成立（11 页里已有多页没有 technical 层，sector 才是实际最后一层）。"""
+    out = render(SAMPLE_JSON)
+
+    assert "交易与资金面排在最后" not in out["html"]
+
+
+@skip_no_node
 def test_fetch_failure_is_worded_differently_from_zero_announcements():
     """两个分支的文案必须不同——这条直接对应 2026-08-11 审查用来证伪上一版测试的
     变异体①（把 error 分支文案换成 empty 分支那句假话）。"""

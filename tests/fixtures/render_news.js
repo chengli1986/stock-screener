@@ -32,7 +32,6 @@ function matchesClass(el, sel) {
 function makeEl(tag) {
   var el = {
     tagName: tag || 'div',
-    className: '',
     innerHTML: '',
     textContent: '',
     children: [],
@@ -41,6 +40,19 @@ function makeEl(tag) {
     _listeners: {},
     _classes: new Set(),
   };
+  // ★2026-08-11 二审 Finding 4：`className` 原来是跟 `_classes`（classList
+  // 读写的那个 Set）完全无关的独立字符串字段——审查者的变异测试证明了这
+  // 有多危险：把某个真实节点的初始 `className` 硬编码成带 'open' 的字符串，
+  // `classList.contains('open')` 依然读的是空 Set，测试全绿，看不出任何
+  // 破绽。改成 accessor：读写 className 字符串本质上是在读写同一个
+  // `_classes` Set，两者不可能再分叉。
+  Object.defineProperty(el, 'className', {
+    get: function () { return Array.from(el._classes).join(' '); },
+    set: function (v) {
+      el._classes = new Set(String(v == null ? '' : v).split(/\s+/).filter(Boolean));
+    },
+  });
+  el.className = '';
   el.getAttribute = function (n) {
     return Object.prototype.hasOwnProperty.call(el._attrs, n) ? el._attrs[n] : null;
   };

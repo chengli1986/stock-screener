@@ -41,16 +41,36 @@ function arg(flag) {
   return i === -1 ? null : process.argv[i + 1];
 }
 
-// Reconstructs an html-ish string by walking real child nodes. A node with
-// no real children (report-news.js only ever sets .innerHTML as a leaf
-// string, never both appendChild *and* .innerHTML on the same node) just
-// contributes its raw .innerHTML string; a node with real children recurses.
-// This deliberately does not emit the container's own tag — it mirrors what
-// direct `.innerHTML =` string-building used to produce pre-Task-7, so every
-// pre-existing html-substring assertion keeps working unchanged.
+// Reconstructs an html-ish string by walking real child nodes.
+//
+// ★2026-08-11 二审 Finding 5：第一版这里只拼子节点/innerHTML，从不吐出节点
+// 自己的标签——结果 procedural/sector 的 <h3>/<button> 和 <ul> 这两层容器
+// 标签在 out.html 里彻底消失（只剩内容裸拼），层标题文案会跟下一层的 <li>
+// 直接连在一起。当时的断言恰好没碰这两个标签所以全绿，但这会让以后任何
+// 针对层容器标签的字符串断言静默失效。
+//
+// 区分规则：`div` 是本文件（intro 包装层、.accord-inner 本身）用来承载
+// 字符串内容的纯组织性容器，不代表页面上真实存在的可见标签，flatten 时不
+// 吐出它自己的 <div>——这与改动前「一整块 innerHTML 字符串」的输出形状一致
+// （intro 段落从来没被包过 <div>）。非 div 的真实元素（buildLayer() 造的
+// <h3>/<button>/<ul>）代表真实可见标签，flatten 时连标签本身一起吐出来，
+// 跟 Task 7 之前「拼字符串」产出的 `<h3 class="rn-h">…</h3><ul class="rn-list">…</ul>`
+// 逐字节一致。
+function attrsString(el) {
+  var parts = [];
+  if (el.className) parts.push('class="' + el.className + '"');
+  Object.keys(el._attrs || {}).forEach(function (k) {
+    parts.push(k + '="' + el._attrs[k] + '"');
+  });
+  return parts.length ? ' ' + parts.join(' ') : '';
+}
+
 function flatten(el) {
-  if (!el.children || !el.children.length) return el.innerHTML || '';
-  return el.children.map(flatten).join('');
+  var body = (el.children && el.children.length)
+    ? el.children.map(flatten).join('')
+    : (el.innerHTML || '');
+  if (el.tagName === 'div') return body;
+  return '<' + el.tagName + attrsString(el) + '>' + body + '</' + el.tagName + '>';
 }
 
 function findAll(el, pred, out) {

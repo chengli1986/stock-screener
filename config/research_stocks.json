@@ -15,9 +15,7 @@
       "800G OSFP",
       "800G和1.6T"
     ],
-    "news_aliases": [
-      "旭创"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "688256",
@@ -38,9 +36,7 @@
     "page": "/shengke-688702.html",
     "business": "以太网交换芯片",
     "valuation_mode": "ps",
-    "news_aliases": [
-      "盛科"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "688498",
@@ -50,9 +46,7 @@
     "page": "/yuanjie-688498.html",
     "business": "光芯片",
     "valuation_mode": "both",
-    "news_aliases": [
-      "源杰"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "688048",
@@ -62,9 +56,7 @@
     "page": "/changguang-688048.html",
     "business": "半导体激光芯片",
     "valuation_mode": "ps",
-    "news_aliases": [
-      "长光"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "000636",
@@ -74,9 +66,7 @@
     "page": "/fenghua-000636.html",
     "business": "被动元件 MLCC",
     "valuation_mode": "both",
-    "news_aliases": [
-      "风华"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "300408",
@@ -90,9 +80,7 @@
       "tencent": "hk06951"
     },
     "valuation_mode": "both",
-    "news_aliases": [
-      "三环"
-    ]
+    "news_aliases": []
   },
   {
     "symbol": "300750",
@@ -106,7 +94,6 @@
       "tencent": "hk03750"
     },
     "news_aliases": [
-      "宁德",
       "CATL"
     ]
   },
@@ -120,7 +107,8 @@
     "valuation_mode": "pe",
     "news_aliases": [
       "茅台"
-    ]
+    ],
+    "news_aliases_note": "2026-08-11 二审量化：11 只股票的 119 条真实新闻标题里，「茅台」是唯一贡献非 0 的中文短别名（3 条飞天茅台涨价新闻，公司全名/代码都命中不了）。已知代价：会误命中「茅台镇多家酒企集体提价」这类同地名新闻，是刻意接受的取舍，不是遗漏。"
   },
   {
     "symbol": "02513",
@@ -137,7 +125,9 @@
       "Zhipu",
       "Z.ai",
       "ZhipuAI",
-      "智谱AI"
+      "智谱AI",
+      "2513",
+      "Knowledge Atlas"
     ]
   },
   {
@@ -150,7 +140,6 @@
     "valuation_mode": "both",
     "consensus_note": "2026-08-03 取自同花顺一致预期，仅 3 家机构覆盖（上市 6 个交易日），离散度见 688825-consensus.json；研报页=cxmt-ipo.html（pre-IPO 静态页，8-03 已全面审计并接入行情水合 + 週报叙事）",
     "news_aliases": [
-      "长鑫",
       "CXMT"
     ]
   }

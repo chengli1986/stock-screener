@@ -2,7 +2,7 @@
 """test_news_rules.py — 新闻/公告的分层判定
 
 标题全部取自 2026-08-11 的真实抓取结果（见 spec 第 7 节）。
-层序：major > substantive > news > procedural > technical。
+层序：major > substantive > news > procedural > technical > sector。
 """
 
 import importlib.util
@@ -169,10 +169,15 @@ class TestPriority:
 # ── sector 层：新闻相关性降权 ─────────────────────────────────────────────────
 
 
+# ★2026-08-11 二审 Finding 1：这些别名与 config/research_stocks.json 的当前
+# 真实值保持一致——中文短别名（长光/三环/旭创/盛科/源杰/风华/宁德/长鑫）已
+# 删除（对抗测试证明会误命中同名实体，实测量化贡献又是 0），只留零误命中
+# 风险的拉丁专名 / 已知有真实贡献的「茅台」。ZHIPU 补了 Finding 2 的
+# "2513"/"Knowledge Atlas"。
 ZHIPU = {"name": "智谱", "symbol": "02513",
-         "aliases": ["Zhipu", "Z.ai", "ZhipuAI", "智谱AI"]}
-CHANGGUANG = {"name": "长光华芯", "symbol": "688048", "aliases": ["长光"]}
-SANHUAN = {"name": "三环集团", "symbol": "300408", "aliases": ["三环"]}
+         "aliases": ["Zhipu", "Z.ai", "ZhipuAI", "智谱AI", "2513", "Knowledge Atlas"]}
+CHANGGUANG = {"name": "长光华芯", "symbol": "688048", "aliases": []}
+SANHUAN = {"name": "三环集团", "symbol": "300408", "aliases": []}
 
 
 class TestSectorLayer:
@@ -285,6 +290,104 @@ class TestSectorLayer:
         got = nr.classify(news("Tencent's WorkBuddy Sparks AI Turnaround Hopes"))
 
         assert got != "sector"
+
+
+class TestSectorLayerShortAliasFalsePositives:
+    """★2026-08-11 二审 Finding 1：审查者用真实存在的同名实体做对抗测试，
+    证明中文短别名（长光/三环/旭创/盛科/源杰/风华/宁德/长鑫）会把无关公司的
+    新闻误判为「相关」（不降权到 sector）。量化过这些别名在 119 条真实标题里
+    的实际贡献——除了「茅台」（3 条）和拉丁专名，全部是 0，删除后不损失任何
+    真实召回，只消除误命中风险。这组用例用 config 里当前真实的（已删除短别名的）
+    ZHIPU/CHANGGUANG/SANHUAN 验证这些同名实体标题现在会被正确降权到 sector。
+    """
+
+    def test_changguang_satellite_company_is_sector_not_relevant(self):
+        """「长光卫星」是另一家公司，不是长光华芯。"""
+        got = nr.classify(news("长光卫星完成新一轮融资"), CHANGGUANG)
+
+        assert got == "sector"
+
+    def test_changchen_ipo_is_sector_not_relevant(self):
+        """「长光辰芯」也是另一家公司。"""
+        got = nr.classify(news("长光辰芯科创板IPO获受理"), CHANGGUANG)
+
+        assert got == "sector"
+
+    def test_sanhuan_road_traffic_is_sector_not_relevant(self):
+        """「三环路」是北京的道路，不是三环集团。"""
+        got = nr.classify(news("北京三环路早高峰拥堵指数创新高"), SANHUAN)
+
+        assert got == "sector"
+
+    def test_sanhuan_shares_another_company_is_sector_not_relevant(self):
+        """「三环股份」是另一家上市公司（同名不同司），不是三环集团。"""
+        got = nr.classify(news("三环股份拟发行可转债"), SANHUAN)
+
+        assert got == "sector"
+
+    def test_ningde_city_government_is_sector_not_relevant(self):
+        """「宁德市政府」是地级市政府，不是宁德时代。用当前真实（不含中文
+        「宁德」别名，只保留 CATL）的公司信息验证。"""
+        company = {"name": "宁德时代", "symbol": "300750", "aliases": ["CATL"]}
+        got = nr.classify(news("宁德市政府与多家企业签署战略合作协议"), company)
+
+        assert got == "sector"
+
+    def test_fenghua_fund_manager_column_is_sector_not_relevant(self):
+        """「风华正茂」是常见成语，用在基金经理专栏标题里，不是风华高科。"""
+        company = {"name": "风华高科", "symbol": "000636", "aliases": []}
+        got = nr.classify(news("风华正茂：A股新生代基金经理观察"), company)
+
+        assert got == "sector"
+
+    def test_shengke_new_materials_is_sector_not_relevant(self):
+        """「盛科新材料」是另一家公司，不是盛科通信。"""
+        company = {"name": "盛科通信", "symbol": "688702", "aliases": []}
+        got = nr.classify(news("盛科新材料完成B轮融资"), company)
+
+        assert got == "sector"
+
+    def test_moutai_town_tradeoff_is_accepted_and_documented(self):
+        """★「茅台」保留是刻意取舍（真实贡献 3 条，量化见 config 里的
+        news_aliases_note），代价是「茅台镇」这类同地名新闻会被误判相关——
+        这条不是 bug，是记录在案的已知行为，测试只是把它钉住，不是在追求
+        消除它。"""
+        got = nr.classify(news("茅台镇多家酒企集体提价"), {
+            "name": "贵州茅台", "symbol": "600519", "aliases": ["茅台"]})
+
+        assert got != "sector"  # 已知代价：这是刻意接受的假阳性，不是缺陷
+
+
+class TestSectorLayerHkexLeadingZero:
+    """★2026-08-11 二审 Finding 2：港交所代码带前导零（02513），但外媒引用
+    港股代码几乎不带前导零（SEHK:2513），字符串子串匹配天然对不上——这是
+    真实假阴性，`02513-news-raw.jsonl` 里智谱自己的英文通稿因此被误判
+    sector。"""
+
+    def test_real_hkex_leading_zero_headline_stays_relevant(self):
+        """真实标题：智谱自己的英文名 + 自己的港股代码（无前导零引用）。"""
+        got = nr.classify(news(
+            "Knowledge Atlas Technology (SEHK:2513) Launches Share Sale "
+            "And Opens GLM 5.2 To Developers"), ZHIPU)
+
+        assert got != "sector"
+
+    def test_leading_zero_stripped_variant_matches_even_without_alias(self):
+        """不靠「2513」这个别名兜底，单纯代码去前导零也要能匹配——
+        验证的是 `_mentions_company` 的代码逻辑，不是配置表补的别名。"""
+        company = {"name": "智谱", "symbol": "02513", "aliases": []}
+        got = nr.classify(news("SEHK:2513 completes GLM share placement"), company)
+
+        assert got != "sector"
+
+    def test_a_share_leading_zeros_not_over_stripped(self):
+        """★不能把这条处理用到 A 股代码上产生新问题：`000636` 去零后是
+        `636`，只有 3 位，低于 4 位阈值，不启用，不会把含「636」的无关文本
+        误判成风华高科相关。"""
+        company = {"name": "风华高科", "symbol": "000636", "aliases": []}
+        got = nr.classify(news("今日沪指跌0.636%，两市成交额6360亿元"), company)
+
+        assert got == "sector"
 
 
 # ── 同事件聚合 ───────────────────────────────────────────────────────────────
