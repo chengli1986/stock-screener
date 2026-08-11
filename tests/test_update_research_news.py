@@ -237,3 +237,64 @@ class TestHistoryCorruptRows:
 
         assert len(got) == 1
         assert got[0]["title"] == "A"
+
+
+# ── 港股：披露易解析 ─────────────────────────────────────────────────────────
+
+
+class TestHkexParse:
+    """★披露易返回的日期是 DD/MM/YYYY，且 SHORT_TEXT 自带官方分类。
+    日期格式弄反会让全部条目掉出 30 天窗口——静默失败，页面只是空着。"""
+
+    _ROWS = [{"DATE_TIME": "04/08/2026 16:30", "STOCK_CODE": "02513",
+              "SHORT_TEXT": "月報表<br/>",
+              "TITLE": "截至二零二六年七月三十一日止月份之股份發行人的證券變動月報表",
+              "FILE_LINK": "/listedco/listconews/sehk/2026/0804/2026080400123.pdf"},
+             {"DATE_TIME": "13/07/2026 08:00", "STOCK_CODE": "02513",
+              "SHORT_TEXT": "公告及通告 - [配售]<br/>",
+              "TITLE": "完成根據一般授權配售新H股",
+              "FILE_LINK": "/listedco/listconews/sehk/2026/0713/2026071300456.pdf"}]
+
+    def test_date_converted_to_iso(self):
+        got = urn.parse_hkex_rows(self._ROWS)
+
+        assert got[0]["date"] == "2026-08-04"
+
+    def test_category_kept_for_classification(self):
+        got = urn.parse_hkex_rows(self._ROWS)
+
+        assert got[0]["category"] == "月報表"
+
+    def test_url_is_absolute(self):
+        """FILE_LINK 是相对路径，直接给页面会点不开。"""
+        got = urn.parse_hkex_rows(self._ROWS)
+
+        assert got[0]["url"].startswith("https://www1.hkexnews.hk/")
+
+    def test_html_break_stripped_from_category(self):
+        got = urn.parse_hkex_rows(self._ROWS)
+
+        assert "<br/>" not in got[1]["category"]
+
+    def test_kind_is_announcement(self):
+        got = urn.parse_hkex_rows(self._ROWS)
+
+        assert all(x["kind"] == "announcement" for x in got)
+
+
+class TestHkClassificationEndToEnd:
+    """港股公告经 parse → classify 后应落到正确的层。"""
+
+    def test_monthly_return_is_procedural(self):
+        got = urn.parse_hkex_rows(TestHkexParse._ROWS)
+        p = urn.build_payload("02513", "智谱", got, [], "2026-08-11")
+        layers = {g["layer"] for g in p["groups"]}
+
+        assert "procedural" in layers
+
+    def test_placing_is_substantive(self):
+        got = urn.parse_hkex_rows(TestHkexParse._ROWS)
+        p = urn.build_payload("02513", "智谱", got, [], "2026-08-11")
+        subs = [g for g in p["groups"] if g["layer"] == "substantive"]
+
+        assert subs and "配售" in subs[0]["items"][0]["title"]

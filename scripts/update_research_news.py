@@ -95,6 +95,83 @@ def fetch_em_news(code: str) -> list[dict]:
             for _, r in df.iterrows()]
 
 
+# ── 港股 ─────────────────────────────────────────────────────────────────────
+#
+# 巨潮 market='沪深京' 不含港股，港股走港交所披露易官方查询接口。
+# 需先把股票代码换成内部 stockId（智谱 02513 → 1000286748），该映射写进
+# config/research_stocks.json 的 hkex_stock_id 缓存，避免每次多一次请求。
+
+_HKEX_BASE = "https://www1.hkexnews.hk"
+_HKEX_SEARCH = _HKEX_BASE + "/search/titleSearchServlet.do"
+_HKEX_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def parse_hkex_rows(rows: list[dict]) -> list[dict]:
+    """披露易返回行 → 统一结构。
+
+    ★日期是 DD/MM/YYYY。弄反会让全部条目掉出 30 天窗口——静默失败，页面只是空着。
+    ★SHORT_TEXT 是官方分类（月報表 / 公告及通告 - [配售]），比猜标题可靠，
+      带进 category 供 classify() 优先使用。
+    """
+    out = []
+    for r in rows or []:
+        raw_date = str(r.get("DATE_TIME") or "").strip()
+        try:
+            d = datetime.strptime(raw_date.split()[0], "%d/%m/%Y").strftime("%Y-%m-%d")
+        except (ValueError, IndexError):
+            continue
+        link = str(r.get("FILE_LINK") or "").strip()
+        out.append({
+            "kind": "announcement",
+            "title": str(r.get("TITLE") or "").strip(),
+            "date": d,
+            "url": (_HKEX_BASE + link) if link.startswith("/") else link,
+            "category": str(r.get("SHORT_TEXT") or "").replace("<br/>", "").strip(),
+        })
+    return out
+
+
+def fetch_hkex_announcements(stock_id: str, days: int = WINDOW_DAYS) -> list[dict]:
+    """按港交所内部 stockId 拉近 N 天公告。自带 timeout，不走 call_with_timeout。"""
+    import requests
+
+    end = date.today()
+    start = end - timedelta(days=days)
+    params = {"sortDir": "0", "sortByOptions": "DateTime", "category": "0",
+              "market": "SEHK", "stockId": str(stock_id), "documentType": "-1",
+              "fromDate": start.strftime("%Y%m%d"), "toDate": end.strftime("%Y%m%d"),
+              "title": "", "searchType": "1", "t1code": "-2", "t2Gcode": "-2",
+              "t2code": "-2", "rowRange": "100", "lang": "ZH"}
+    r = requests.get(_HKEX_SEARCH, params=params, headers=_HKEX_HEADERS, timeout=30)
+    r.raise_for_status()
+    return parse_hkex_rows(json.loads(json.loads(r.text)["result"]))
+
+
+def fetch_yf_news(ticker: str) -> list[dict]:
+    """yfinance 的 news 字段。⚠ 它按标签松散关联，会有话题漂移
+    （实测智谱的结果里混进过 BNB 币），分层时靠 classify 兜不住——
+    这是港股新闻层质量明显低于 A 股的已知代价。"""
+    def _work():
+        import yfinance as yf
+
+        return yf.Ticker(ticker).news or []
+
+    raw = call_with_timeout(_work, 60, label=f"yf-news[{ticker}]") or []
+    out = []
+    for x in raw:
+        c = x.get("content") or x
+        pub = str(c.get("pubDate") or "")[:10]
+        if not pub:
+            continue
+        out.append({"kind": "news",
+                    "title": str(c.get("title") or "").strip(),
+                    "date": pub,
+                    "url": str((c.get("canonicalUrl") or {}).get("url")
+                               or c.get("link") or "").strip(),
+                    "source": str((c.get("provider") or {}).get("displayName") or "")})
+    return out
+
+
 # ── 新闻攒历史 ───────────────────────────────────────────────────────────────
 
 
@@ -240,30 +317,56 @@ def main() -> int:
     for s in stocks:
         key = s.get("snapshot_key") or s["symbol"]
         name = s.get("name")
-        if s.get("exchange") == "HK":
-            continue          # 港股在 Task 4 接入
+        is_hk = s.get("exchange") == "HK"
         # ★整只股票包一层 try/except：一只失败不该拖垮其余——实测过历史
         # jsonl 里一行合法 JSON 但非 dict（如裸数字 123）会让 `.get()` 抛
         # AttributeError，若不隔离，后面的股票全部不处理。
         try:
-            try:
-                anns = fetch_cninfo_announcements(s["symbol"])
-            except Exception as e:  # noqa: BLE001
-                print(f"WARN: [{key}] 公告抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
-                # 哨兵 None：与「抓取成功、确认 0 条」区分，见 build_payload。
-                anns = None
-                errors.append(f"{key}:公告:{type(e).__name__}")
-            try:
-                fresh = fetch_em_news(s["symbol"])
-            except Exception as e:  # noqa: BLE001
-                print(f"WARN: [{key}] 新闻抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
-                fresh = []     # 新闻走 merge_news_history 回读历史，不会说谎
-                errors.append(f"{key}:新闻:{type(e).__name__}")
+            if is_hk:
+                sid = s.get("hkex_stock_id")
+                if not sid:
+                    # 缺映射＝公告层不可用，与抓取失败同样处理：哨兵 None，
+                    # 绝不是 []（那会让 build_payload 断言「确认 0 条」）。
+                    print(f"WARN: [{key}] 缺 hkex_stock_id，公告层标记为失败",
+                          file=sys.stderr)
+                    anns = None
+                    errors.append(f"{key}:公告:缺hkex_stock_id")
+                else:
+                    try:
+                        anns = fetch_hkex_announcements(sid)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"WARN: [{key}] 披露易抓取失败: {type(e).__name__}: {e}",
+                              file=sys.stderr)
+                        anns = None
+                        errors.append(f"{key}:公告:{type(e).__name__}")
+                try:
+                    fresh = fetch_yf_news(s.get("yf_ticker")
+                                          or f"{s['symbol'].lstrip('0')}.HK")
+                except Exception as e:  # noqa: BLE001
+                    print(f"WARN: [{key}] yfinance 新闻失败: {type(e).__name__}: {e}",
+                          file=sys.stderr)
+                    fresh = []
+                    errors.append(f"{key}:新闻:{type(e).__name__}")
+            else:
+                try:
+                    anns = fetch_cninfo_announcements(s["symbol"])
+                except Exception as e:  # noqa: BLE001
+                    print(f"WARN: [{key}] 公告抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
+                    # 哨兵 None：与「抓取成功、确认 0 条」区分，见 build_payload。
+                    anns = None
+                    errors.append(f"{key}:公告:{type(e).__name__}")
+                try:
+                    fresh = fetch_em_news(s["symbol"])
+                except Exception as e:  # noqa: BLE001
+                    print(f"WARN: [{key}] 新闻抓取失败: {type(e).__name__}: {e}", file=sys.stderr)
+                    fresh = []     # 新闻走 merge_news_history 回读历史，不会说谎
+                    errors.append(f"{key}:新闻:{type(e).__name__}")
             news = merge_news_history(key, fresh, DATA_DIR)
             payload = build_payload(key, name, anns, news)
             write_and_deploy(key, payload, DATA_DIR, DEPLOY_DATA_DIR)
             ann_str = "抓取失败" if anns is None else f"{len(anns)} 条"
-            print(f"  [{key}] ✓ {name}  公告 {ann_str} / 新闻 {len(news)} 条"
+            tag = "（港股）" if is_hk else ""
+            print(f"  [{key}] ✓ {name}{tag}  公告 {ann_str} / 新闻 {len(news)} 条"
                   f"  分 {len(payload['groups'])} 层")
         except Exception as e:  # noqa: BLE001
             msg = f"{key}:{type(e).__name__}"
