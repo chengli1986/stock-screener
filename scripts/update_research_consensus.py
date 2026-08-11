@@ -850,6 +850,13 @@ def fetch_em(symbol: str, exchange: str) -> dict:
     return {
         "estimates": parse_em_estimates(d.get("yctj_list")),
         "ratings": parse_em_ratings(d.get("pjtj")),
+        # ⚠ A 股这一侧**刻意保持原样**（用户 2026-08-10：ETNet/yfinance 只服务港股，
+        # 别动 A 股）。已知问题记录在此，需要时另行决定是否修：
+        # `parse_em_brokers` 是位置式年份（profit_y2/y3，跨年或不同标的位次会变）
+        # 且 limit=20 硬截断——茅台存 20 条却按 31 家算统计量，宁德存 20 条却按 27 家算，
+        # 「存下来的逐家明细」与「统计量用的样本」对不上。
+        # 逐家预测回测记录（broker-forecasts.jsonl）因此只覆盖港股：
+        # append_broker_forecasts 只接受 {年份: [...]} 形状，A 股的扁平 list 会被拒收。
         "brokers": parse_em_brokers(ycmx),
         "broker_stats": robust_stats(parse_em_broker_records(ycmx)),
     }
@@ -983,6 +990,9 @@ def write_and_deploy(snapshot_key: str, record: dict) -> None:
         hist = append_history(snapshot_key, record, DOCS_DATA)
         if DEPLOY_DATA.is_dir():
             shutil.copy2(hist, DEPLOY_DATA / hist.name)
+        bf = append_broker_forecasts(snapshot_key, record, DOCS_DATA)
+        if bf and DEPLOY_DATA.is_dir():
+            shutil.copy2(bf, DEPLOY_DATA / bf.name)
     except Exception as e:  # noqa: BLE001 — 历史是加分项，不该拖垮当期数据落盘
         print(f"WARN: [{snapshot_key}] 修正历史写入失败: {type(e).__name__}: {e}",
               file=sys.stderr)
@@ -1252,6 +1262,71 @@ def _snapshot_price(snapshot_key: str, data_dir: pathlib.Path) -> float | None:
         return None
 
 
+def append_broker_forecasts(snapshot_key: str, record: dict,
+                            data_dir: pathlib.Path) -> pathlib.Path | None:
+    """把逐家机构预测追加进 `{key}-broker-forecasts.jsonl`（按 org+year+published 去重）。
+
+    ## 为什么单独存一份而不是靠 consensus.json
+
+    `consensus.json` 是**覆盖写**的：这周抓到摩根大通说 −36 亿，下周它改成 −30 亿，
+    上一版就没了。而「谁的预测更准」只有在实际值揭晓后回头比才算得出来——
+    到那时记录已经不存在。
+
+    ## 为什么不塞进 consensus-history.jsonl
+
+    那份是每周一行的聚合观测。逐家记录**不需要按周快照**：每条预测自带 `published`，
+    券商不改口就不会变。按 (机构, 年份, 发布日) 去重，重跑不会重复，
+    券商修正则自然产生新行——这既省空间又保留了修正轨迹。
+
+    ## 这份记录将来能回答什么
+
+    - 实际值揭晓后，逐家预测误差（谁更准，不是谁更乐观）
+    - 某机构是否系统性偏乐观/偏悲观
+    - 中资 vs 外资的准确度差异——2026-08-10 实测智谱：外资三年均值都比中资乐观
+      （2028E 差 18 亿、方向都不同），但**「更乐观」不等于「更准」**，
+      而在有实际值之前这个问题无法回答。存下来，才有机会回答。
+    """
+    brokers = record.get("brokers")
+    if not isinstance(brokers, dict) or not brokers:
+        return None
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / f"{snapshot_key}-broker-forecasts.jsonl"
+
+    seen: set[tuple] = set()
+    rows: list[dict] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rows.append(r)
+            seen.add((r.get("org"), r.get("year"), r.get("published")))
+
+    first_seen = str(record.get("fetched_at") or "")[:10]
+    source = record.get("broker_source") or record.get("cross_source") or "unknown"
+    added = 0
+    for year, items in sorted(brokers.items()):
+        for it in items or []:
+            key = (it.get("org"), year, it.get("published"))
+            if key in seen or not it.get("org"):
+                continue
+            seen.add(key)
+            rows.append({"org": it["org"], "year": year,
+                         "published": it.get("published"), "value": it.get("value"),
+                         "first_seen": first_seen, "source": source})
+            added += 1
+    if not added:
+        return path
+    rows.sort(key=lambda r: (r.get("year") or "", r.get("published") or "", r.get("org") or ""))
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                    encoding="utf-8")
+    return path
+
+
 def append_history(snapshot_key: str, record: dict, data_dir: pathlib.Path) -> pathlib.Path:
     """追加一条观测；**同日重跑覆盖而非追加**。
 
@@ -1463,6 +1538,11 @@ def main() -> int:
                 try:
                     et = fetch_et(symbol)
                     record["broker_stats"] = robust_stats(et["brokers"])
+                    # ★逐家明细落盘（2026-08-10 补）。此前只喂给 robust_stats 就丢掉，
+                    # 而它是港股唯一的净利来源（yfinance 只给营收+EPS，EPS 因股本假设不可比已弃用），
+                    # 且带机构名与发布日期——扔掉就永远无法回头算「谁的预测更准」。
+                    # 形状与 A 股一致：{'2026E': [{'org','published','value'}]}。
+                    record["brokers"] = et["brokers"]
                     record["broker_source"] = "etnet"
                     # 目标价只展示、不参与任何判定（复合量，且与 yfinance 券商池重叠）
                     record["target_price_display_only"] = {
