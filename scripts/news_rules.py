@@ -77,3 +77,47 @@ LAYER_LABEL = {
     "procedural": "程序性文件",
     "technical": "交易与资金面",
 }
+
+
+# 可聚合的事件关键词。只列**会被拆成多条连续公告**的那些——
+# 实测三环集团一次回购发了 6 条（方案/首次/进展/结果/贷款承诺函/前十名股东持股）。
+_EVENT_KEYS = ("回购", "减持", "增持", "权益变动", "业绩预告",
+               "股东会", "董事会", "解禁", "限售股上市流通", "配售")
+
+
+def _event_key(item: dict):
+    """同事件的分组键：(来源类型, 事件关键词)。取不到关键词返回 None＝不参与聚合。
+
+    带上来源类型，是因为公告与新闻不该合并——一个是一手披露、一个是二手报道，
+    混在一起会让「共 N 条」这个数字失去意义。
+    """
+    title = str(item.get("title") or "")
+    for k in _EVENT_KEYS:
+        if k in title:
+            return (item.get("kind"), k)
+    return None
+
+
+def group_events(items: list[dict]) -> list[dict]:
+    """同事件聚成一条，保留最新那条为可见项，其余进 `group_members`。
+
+    返回顺序：与传入顺序一致（按各组最新那条的原始位置）。排序由调用方负责。
+    """
+    groups: dict = {}
+    order: list = []
+    for it in items:
+        key = _event_key(it)
+        bucket = key if key else ("__single__", id(it))
+        if bucket not in groups:
+            groups[bucket] = []
+            order.append(bucket)
+        groups[bucket].append(it)
+
+    out = []
+    for bucket in order:
+        members = sorted(groups[bucket], key=lambda x: str(x.get("date") or ""), reverse=True)
+        head = dict(members[0])
+        head["group_count"] = len(members)
+        head["group_members"] = members[1:]
+        out.append(head)
+    return out

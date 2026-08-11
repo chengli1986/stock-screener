@@ -121,3 +121,64 @@ class TestPriority:
         got = nr.classify(ann("关于公司股票主力资金净流入情况的说明公告"))
 
         assert got == "substantive"
+
+
+# ── 同事件聚合 ───────────────────────────────────────────────────────────────
+
+
+def _a(title, date):
+    return {"kind": "announcement", "title": title, "date": date,
+            "url": "https://x/" + date + title[:4], "category": None}
+
+
+class TestGroupEvents:
+    """★实测三环集团一次回购产生 6 条公告，不聚合会在列表里连续刷屏。"""
+
+    _BUYBACK = [
+        _a("关于2026年第二期回购公司股份方案的公告暨回购股份报告书", "2026-07-21"),
+        _a("关于首次回购公司股份的公告", "2026-07-22"),
+        _a("关于首次回购公司股份暨回购股份进展的公告", "2026-08-03"),
+        _a("关于股份回购结果暨股份变动的公告", "2026-08-05"),
+        _a("关于取得金融机构股票回购贷款承诺函的公告", "2026-07-25"),
+    ]
+
+    def test_collapses_to_one_row(self):
+        got = nr.group_events(self._BUYBACK)
+
+        assert len(got) == 1
+
+    def test_keeps_the_latest_as_the_visible_one(self):
+        got = nr.group_events(self._BUYBACK)
+
+        assert got[0]["date"] == "2026-08-05"
+
+    def test_reports_how_many_were_collapsed(self):
+        got = nr.group_events(self._BUYBACK)
+
+        assert got[0]["group_count"] == 5
+
+    def test_members_are_retained_for_expansion(self):
+        """折叠的不能丢——用户要能展开看全部。"""
+        got = nr.group_events(self._BUYBACK)
+
+        assert len(got[0]["group_members"]) == 4
+
+    def test_different_events_stay_separate(self):
+        items = [_a("关于首次回购公司股份的公告", "2026-07-22"),
+                 _a("2026年半年度业绩预告", "2026-07-14")]
+
+        assert len(nr.group_events(items)) == 2
+
+    def test_ungrouped_item_has_count_one(self):
+        got = nr.group_events([_a("2026年半年度业绩预告", "2026-07-14")])
+
+        assert got[0]["group_count"] == 1 and got[0]["group_members"] == []
+
+    def test_news_and_announcement_never_group_together(self):
+        """★不同来源的同关键词不该合并：公告是一手披露，新闻是二手报道，
+        合并会让「共 N 条」这个数字失去意义。"""
+        items = [_a("关于首次回购公司股份的公告", "2026-07-22"),
+                 {"kind": "news", "title": "中际旭创拟回购80亿元", "date": "2026-07-29",
+                  "url": "https://y/1", "category": None}]
+
+        assert len(nr.group_events(items)) == 2
