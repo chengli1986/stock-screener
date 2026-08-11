@@ -1,0 +1,99 @@
+{
+  "_snapshot_note": "F4（2026-08-11 三审）：这是 688048 在 2026-08-11/12 抓取的一份固定快照，供 tests/test_news_page_wiring.py 做渲染断言用——不是活数据引用。之前直接读 docs-site/data/*.json 活文件，公司一发新公告/新闻，测试断言的数据前提（分层/announcements_empty/group_members 等）就可能悄悄变化，代码没改也会变红。这份快照冻结在当时状态，除非手动重新生成，否则不会随 cron 采集漂移。",
+  "symbol": "688048",
+  "name": "长光华芯",
+  "window_days": 30,
+  "as_of": "2026-08-12",
+  "groups": [
+    {
+      "layer": "sector",
+      "label": "板块与市场",
+      "items": [
+        {
+          "kind": "news",
+          "title": "电子行业资金流出榜：寒武纪、中微公司等净流出资金居前",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113837929217.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "23只科创板股融资余额增加超5000万元",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113837521510.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "50只科创板活跃股获主力资金净流入",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113837988573.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "107只科创板股票跻身百元股阵营",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113837929140.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "28只科创板个股主力资金净流入超亿元",
+          "date": "2026-08-10",
+          "url": "http://finance.eastmoney.com/a/202608103836699922.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "科创板平均股价52.63元，107股股价超百元",
+          "date": "2026-08-10",
+          "url": "http://finance.eastmoney.com/a/202608103836629744.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "8月7日科创板主力资金净流入104.35亿元",
+          "date": "2026-08-07",
+          "url": "http://finance.eastmoney.com/a/202608073835259753.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "749只股短线走稳 站上五日均线",
+          "date": "2026-08-04",
+          "url": "http://finance.eastmoney.com/a/202608043831213642.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "8月4日科创板主力资金净流入75.51亿元",
+          "date": "2026-08-04",
+          "url": "http://finance.eastmoney.com/a/202608043831314742.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    }
+  ],
+  "announcements_empty": true,
+  "announcements_error": false,
+  "is_empty": false
+}

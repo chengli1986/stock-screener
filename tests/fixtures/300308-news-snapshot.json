@@ -1,0 +1,245 @@
+{
+  "_snapshot_note": "F4（2026-08-11 三审）：这是 300308 在 2026-08-11/12 抓取的一份固定快照，供 tests/test_news_page_wiring.py 做渲染断言用——不是活数据引用。之前直接读 docs-site/data/*.json 活文件，公司一发新公告/新闻，测试断言的数据前提（分层/announcements_empty/group_members 等）就可能悄悄变化，代码没改也会变红。这份快照冻结在当时状态，除非手动重新生成，否则不会随 cron 采集漂移。",
+  "symbol": "300308",
+  "name": "中际旭创",
+  "window_days": 30,
+  "as_of": "2026-08-12",
+  "groups": [
+    {
+      "layer": "major",
+      "label": "重要事项",
+      "items": [
+        {
+          "kind": "announcement",
+          "title": "关于收到董事长提议回购公司股份的公告",
+          "date": "2026-07-29",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225445769&orgId=9900022016&announcementTime=2026-07-29 00:00:00",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "大手笔！300308，董事长提议最多80亿元回购！",
+          "date": "2026-07-29",
+          "url": "http://finance.eastmoney.com/a/202607293825191646.html",
+          "source": "新财富杂志",
+          "group_count": 2,
+          "group_members": [
+            {
+              "kind": "news",
+              "title": "大手笔！300308，董事长提议40亿元—80亿元回购！",
+              "date": "2026-07-28",
+              "url": "http://finance.eastmoney.com/a/202607283823871897.html",
+              "source": "证券时报"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "layer": "substantive",
+      "label": "公司公告",
+      "items": [
+        {
+          "kind": "announcement",
+          "title": "关于境外上市股份（H股）挂牌并上市交易的公告",
+          "date": "2026-07-30",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225449717&orgId=9900022016&announcementTime=2026-07-30 20:33:06",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "关于控股股东及其一致行动人持股比例变动超过1%整数倍的公告",
+          "date": "2026-07-30",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225449716&orgId=9900022016&announcementTime=2026-07-30 20:33:06",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "关于境外上市股份（H股）公开发行价格的公告",
+          "date": "2026-07-28",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225444095&orgId=9900022016&announcementTime=2026-07-28 08:04:08",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "关于刊发H股招股说明书、H股发行价格上限及H股香港公开发售等事宜的公告",
+          "date": "2026-07-22",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225436508&orgId=9900022016&announcementTime=2026-07-22 07:51:15",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "关于境外发行股份（H股）并在香港联交所上市进展的公告",
+          "date": "2026-07-18",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225430099&orgId=9900022016&announcementTime=2026-07-18 00:00:00",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "第六届董事会第二次会议决议公告",
+          "date": "2026-07-18",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225430098&orgId=9900022016&announcementTime=2026-07-18 00:00:00",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    },
+    {
+      "layer": "news",
+      "label": "相关新闻",
+      "items": [
+        {
+          "kind": "news",
+          "title": "中际旭创：子公司拟2745万元认购乾融晟润基金90%份额",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113838033830.html",
+          "source": "财联社",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "中际旭创：子公司拟出资2745万元认购基金90%份额",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113838068140.html",
+          "source": "财中社",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "中际旭创子公司新进为PCB牛股第四大股东",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113838157896.html",
+          "source": "证券时报",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "超600亿元！中际旭创，再创成交天量",
+          "date": "2026-08-05",
+          "url": "http://finance.eastmoney.com/a/202608053832498116.html",
+          "source": "上海证券报",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "300308，成交额A股第一",
+          "date": "2026-07-29",
+          "url": "http://finance.eastmoney.com/a/202607293824919511.html",
+          "source": "上海证券报",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "300308，蝉联公募头号重仓股",
+          "date": "2026-07-21",
+          "url": "http://finance.eastmoney.com/a/202607213815898842.html",
+          "source": "上海证券报",
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    },
+    {
+      "layer": "procedural",
+      "label": "程序性文件",
+      "items": [
+        {
+          "kind": "announcement",
+          "title": "H股公告（截至2026年7月31日止股份发行人的证券变动月报表）",
+          "date": "2026-08-06",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225459824&orgId=9900022016&announcementTime=2026-08-06 00:00:00",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "announcement",
+          "title": "公司章程（草案）",
+          "date": "2026-07-18",
+          "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308&announcementId=1225430100&orgId=9900022016&announcementTime=2026-07-18 00:00:00",
+          "category": null,
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    },
+    {
+      "layer": "technical",
+      "label": "交易与资金面",
+      "items": [
+        {
+          "kind": "news",
+          "title": "中际旭创盘中成交额超600亿元",
+          "date": "2026-08-05",
+          "url": "http://finance.eastmoney.com/a/202608053832499954.html",
+          "source": "上海证券报·中国证券网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "中际旭创300308龙虎榜数据07-28",
+          "date": "2026-07-28",
+          "url": "http://finance.eastmoney.com/a/202607283823514363.html",
+          "source": "东方财富Choice数据",
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    },
+    {
+      "layer": "sector",
+      "label": "板块与市场",
+      "items": [
+        {
+          "kind": "news",
+          "title": "8月11日14只股盘后交易额超千万元",
+          "date": "2026-08-11",
+          "url": "http://finance.eastmoney.com/a/202608113837928552.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "9只个股大宗交易超5000万元",
+          "date": "2026-08-10",
+          "url": "http://finance.eastmoney.com/a/202608103836857733.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        },
+        {
+          "kind": "news",
+          "title": "F5G概念下跌1.16%，主力资金净流出24股",
+          "date": "2026-08-10",
+          "url": "http://finance.eastmoney.com/a/202608103836630586.html",
+          "source": "证券时报网",
+          "group_count": 1,
+          "group_members": []
+        }
+      ]
+    }
+  ],
+  "announcements_empty": false,
+  "announcements_error": false,
+  "is_empty": false
+}

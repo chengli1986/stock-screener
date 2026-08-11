@@ -10,8 +10,8 @@
 //
 // Scope: supports exactly the DOM surface report-news.js actually calls —
 // createElement/appendChild/insertBefore/parentNode/nextSibling,
-// querySelector(All) for '.kd-bar[data-snapshot]' / '.page-wrap' /
-// '.accord-item' / '.sect-num', getAttribute/setAttribute, classList
+// querySelector(All) (descendant search, `.class` and `.class[attr="value"]`
+// selectors), closest(sel), getAttribute/setAttribute, classList
 // (contains/add/remove/toggle), addEventListener + a test-only
 // simulateClick() helper.
 //
@@ -20,13 +20,45 @@
 // to, because report-news.js only ever attaches listeners to elements it
 // created itself via document.createElement — see the C1 fix comment at the
 // top of report-news.js for why that matters).
+//
+// ★2026-08-11 三审 F1：row()/memberRow() 里带交互性的部分（.rn-more-btn /
+// .rn-members）也改成了 createElement 现造真实节点（不再是 innerHTML 字符串
+// 的一部分）——理由跟 buildLayer() 的 head/list 一样：body 级事件委托
+// （e.target.closest('.rn-more-btn') + body.querySelector('.rn-members[data-idx=…]')）
+// 要在这个 shim 里被真实点击测试跑到，前提是这些节点得是真实存在的对象，
+// 不能只是字符串里的文本。为此这里补了两样东西：
+//   - querySelector(All) 从「只查直接子节点、只认纯 class 名」升级成
+//     「递归查所有后代、支持 `.class[attr="value"]` 属性选择器」
+//   - closest(sel)：沿 parentNode 链向上找，同一套选择器匹配逻辑
+// 上一轮已经因为 shim 的 classList/className 脱钩吃过一次亏——这次同理，
+// shim 弱一分，上面所有点击行为断言就都弱一分。
 
 const fs = require('fs');
 const vm = require('vm');
 
-function matchesClass(el, sel) {
-  var cls = sel.replace(/^\./, '');
-  return String(el.className || '').split(/\s+/).indexOf(cls) !== -1;
+// 支持 `.class` 或 `.class[attr="value"]` 两种形式；解析不出来就退回旧的
+// 纯 class 名匹配（历史行为不变，比如 document 级的 '.kd-bar[data-snapshot]'
+// 走的是 run() 里单独的 doc.querySelector 覆盖，不经过这个函数）。
+function matchesSelector(el, sel) {
+  var m = /^\.([\w-]+)(?:\[([\w-]+)="([^"]*)"\])?$/.exec(sel);
+  if (!m) {
+    var cls = sel.replace(/^\./, '');
+    return String(el.className || '').split(/\s+/).indexOf(cls) !== -1;
+  }
+  var cls = m[1], attr = m[2], val = m[3];
+  var hasClass = String(el.className || '').split(/\s+/).indexOf(cls) !== -1;
+  if (!hasClass) return false;
+  if (attr === undefined) return true;
+  return !!el.getAttribute && el.getAttribute(attr) === val;
+}
+
+function queryAllDescendants(el, sel, out) {
+  out = out || [];
+  (el.children || []).forEach(function (c) {
+    if (matchesSelector(c, sel)) out.push(c);
+    queryAllDescendants(c, sel, out);
+  });
+  return out;
 }
 
 function makeEl(tag) {
@@ -69,12 +101,26 @@ function makeEl(tag) {
     if (idx === -1) { el.children.push(newNode); } else { el.children.splice(idx, 0, newNode); }
     return newNode;
   };
+  // F1 三审：从「只查直接子节点」升级成递归查所有后代——production 的
+  // `body.querySelector('.rn-members[data-idx="N"]')` 要找的节点现在挂在
+  // body → inner → list → li 这条链的第 4 层，只查直接子节点永远找不到。
   el.querySelectorAll = function (sel) {
-    return el.children.filter(function (c) { return matchesClass(c, sel); });
+    return queryAllDescendants(el, sel);
   };
   el.querySelector = function (sel) {
     var found = el.querySelectorAll(sel);
     return found.length ? found[0] : null;
+  };
+  // F1 三审新增：真实浏览器里 `Element.closest()` 沿 parentNode 链向上找，
+  // 自身也算——production 的委托监听 `e.target.closest('.rn-more-btn')`
+  // 正是靠这个从「实际点到的节点」找回「真正绑了 data-idx 的按钮」。
+  el.closest = function (sel) {
+    var node = el;
+    while (node) {
+      if (matchesSelector(node, sel)) return node;
+      node = node.parentNode;
+    }
+    return null;
   };
   el.addEventListener = function (type, fn) {
     (el._listeners[type] = el._listeners[type] || []).push(fn);

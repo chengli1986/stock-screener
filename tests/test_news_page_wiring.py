@@ -32,22 +32,30 @@ PAGES = ["innolight-300308", "cambricon-688256", "shengke-688702", "yuanjie-6884
          "changguang-688048", "fenghua-000636", "sanhuan-300408", "catl-300750",
          "moutai-600519", "zhipu-02513", "cxmt-ipo"]
 
-# 真实抓取产出的样例数据，Task 3/4 的产物，用作渲染冒烟测试的输入。
-SAMPLE_JSON = DOCS / "data" / "300308-news.json"
-EMPTY_ANNOUNCE_JSON = DOCS / "data" / "688048-news.json"  # announcements_empty=true 实例
+# ★F4（2026-08-11 三审 Important）：这两个曾经直接指向 docs-site/data/ 下的
+# 活数据（cron 每天重新采集重写）。5 条测试带着数据前提（688048 的
+# groups == ["sector"]、announcements_empty；300308 有 procedural 层、有
+# group_members 项）——长光华芯一发新公告，这些前提说变就变，测试当天变红，
+# 代码却一行没改，是一颗定时红灯。改成读 tests/fixtures/ 下冻结的快照，
+# 不再随活数据漂移；快照来源与冻结时间见 fixtures/*-news-snapshot.json 里的
+# `_snapshot_note` 字段。
+SAMPLE_JSON = FIXTURES / "300308-news-snapshot.json"
+EMPTY_ANNOUNCE_JSON = FIXTURES / "688048-news-snapshot.json"  # announcements_empty=true 实例
 
 NODE = shutil.which("node")
 skip_no_node = pytest.mark.skipif(NODE is None, reason="node 不在 PATH 上，跳过真实渲染测试")
 
 
 def render(json_path, patch=None, accord_items=None, sect_nums=None, click=False,
-          click_layer=None):
+          click_layer=None, click_more_btn=None):
     """调用 render_news_cli.js，真的用 node vm 跑一遍 report-news.js，返回解析后的结果 dict。
 
     这是本文件里唯一「看真实产出」的入口——所有行为性断言都必须走这里，
     不能退回到对 report-news.js 源码文本做字符串匹配。
 
     ``click_layer``：Task 7 新增，点击某一层（如 "procedural"）的折叠标题按钮。
+    ``click_more_btn``：F1 三审新增，点第 n 个（0-based，文档序）`.rn-more-btn`，
+    走 body 级委托（跟 production 一样），不是直接点按钮自己。
     """
     args = [NODE, str(CLI), str(json_path)]
     if patch is not None:
@@ -60,6 +68,8 @@ def render(json_path, patch=None, accord_items=None, sect_nums=None, click=False
         args += ["--click"]
     if click_layer is not None:
         args += ["--click-layer", click_layer]
+    if click_more_btn is not None:
+        args += ["--click-more-btn", str(click_more_btn)]
     r = subprocess.run(args, capture_output=True, text=True, timeout=15)
     assert r.returncode == 0, f"render_news_cli.js 非 0 退出: {r.stdout} {r.stderr}"
     out = json.loads(r.stdout)
@@ -272,6 +282,74 @@ def test_group_members_are_reachable_in_output():
     assert member_title in out["html"]
     assert 'class="rn-members"' in out["html"]
     assert 'rn-more-btn' in out["html"]
+
+
+# ── F1（Critical，2026-08-11 三审，已上线才发现）：聚合展开按钮跨层撞车 ──
+#
+# `row(it, idx)` 的 idx 此前是每层各自从 0 数起（`(g.items).map(row)` 每层
+# 单独 `.map`），但点击委托 `body.querySelector('.rn-members[data-idx="N"]')`
+# 是在**整个章节**范围里找。审查者用 Chromium 跑部署副本实测：
+# shengke-688702 三层聚合项全是 data-idx="0"，点 substantive 的「共 2 条」，
+# 实际展开的是 major 那条。用一个跟审查者复现场景同形状（3 层、每层各一条
+# 聚合项）的合成 fixture 验证——不读任何活数据文件，见文件头 F4 关于活数据
+# 夹具会漂移的教训，这组新测试从一开始就不踩那个坑。
+
+_MULTI_LAYER_GROUPED_PATCH = {
+    "groups": [
+        {"layer": "major", "label": "重要事项", "items": [
+            {"kind": "announcement", "title": "大事分组示例", "date": "2026-08-10",
+             "group_count": 2, "group_members": [
+                 {"kind": "announcement", "title": "大事分组示例-历史条目",
+                  "date": "2026-08-05", "url": "https://x/major-old"}]},
+        ]},
+        {"layer": "substantive", "label": "公司公告", "items": [
+            {"kind": "announcement", "title": "公告分组示例", "date": "2026-08-10",
+             "group_count": 2, "group_members": [
+                 {"kind": "announcement", "title": "公告分组示例-历史条目",
+                  "date": "2026-08-05", "url": "https://x/sub-old"}]},
+        ]},
+        {"layer": "procedural", "label": "程序性文件", "items": [
+            {"kind": "announcement", "title": "程序分组示例", "date": "2026-08-10",
+             "group_count": 2, "group_members": [
+                 {"kind": "announcement", "title": "程序分组示例-历史条目",
+                  "date": "2026-08-05", "url": "https://x/proc-old"}]},
+        ]},
+    ],
+}
+
+
+@skip_no_node
+def test_cross_layer_more_btn_idx_are_globally_unique():
+    """3 层，每层各一条聚合项——F1 修复前这三个按钮的 data-idx 全是 "0"
+    （每层独立从 0 数起）。这条断言直接拦撞车：不要求具体是什么值，只要求
+    互不相同。"""
+    out = render(SAMPLE_JSON, patch=_MULTI_LAYER_GROUPED_PATCH)
+
+    idxs = out["moreBtnIdxs"]
+    assert len(idxs) == 3, f"应该有 3 个聚合展开按钮，实际 {idxs}"
+    assert len(set(idxs)) == len(idxs), f"data-idx 跨层撞车了: {idxs}"
+
+
+@skip_no_node
+def test_click_second_more_btn_opens_only_its_own_members():
+    """★不点第一个（那个永远不会错，见审查者原话），点第二个（substantive
+    层那条），断言展开的是它自己对应的 .rn-members，major/procedural 的
+    members 仍然保持收起——直接对应审查者的真实复现：点 substantive 的
+    「共 2 条」，F1 修复前实际展开的是 major 那条。"""
+    out = render(SAMPLE_JSON, patch=_MULTI_LAYER_GROUPED_PATCH, click_more_btn=1)
+
+    by_layer = {m["layer"]: m["open"] for m in out["membersOpen"]}
+    assert by_layer == {"major": False, "substantive": True, "procedural": False}, by_layer
+
+
+@skip_no_node
+def test_click_first_more_btn_still_works_as_before():
+    """第一个按钮（idx 天然是 0，撞车前后行为一致）也要验证，确保修复没有
+    反过来弄坏了最简单的那条路径。"""
+    out = render(SAMPLE_JSON, patch=_MULTI_LAYER_GROUPED_PATCH, click_more_btn=0)
+
+    by_layer = {m["layer"]: m["open"] for m in out["membersOpen"]}
+    assert by_layer == {"major": True, "substantive": False, "procedural": False}, by_layer
 
 
 # ── Task 7：procedural / sector 默认折叠 ────────────────────────────────────

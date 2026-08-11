@@ -15,11 +15,22 @@
 //     [--click]                   (simulates a click on the accordion header)
 //     [--click-layer <layer>]     (Task 7: simulates a click on that layer's
 //                                  collapsible header, e.g. "procedural")
+//     [--click-more-btn <n>]      (F1 三审: simulates a click on the n-th
+//                                  (0-based, document order) .rn-more-btn,
+//                                  dispatched through body's delegated
+//                                  listener — same code path production uses)
 //     [--src /path/to/report-news.js]  (mutation self-check only)
 //
 // Prints a single JSON object to stdout:
 //   { childrenCount, children: [className,...], html, btnDataOpen, bodyOpen,
-//     layers: { <layerName>: { className, open } } }
+//     layers: { <layerName>: { className, open } },
+//     moreBtnIdxs: [data-idx values of every .rn-more-btn, document order],
+//     membersOpen: { <data-idx>: bool } }
+// moreBtnIdxs/membersOpen are F1 三审 additions: moreBtnIdxs is what the
+// cross-layer-uniqueness test asserts on (one entry per grouped item, by
+// construction — a collision here is exactly the F1 bug); membersOpen is
+// what the real-click test asserts on (only the clicked item's members
+// should be open, everything else stays closed).
 // childrenCount/children describe .page-wrap's direct children *after*
 // rendering, in order — this is what proves M7 (insertion position) and the
 // is_empty early-return (nothing appended).
@@ -86,6 +97,7 @@ var accordItemsArg = arg('--accord-items');
 var sectNumsArg = arg('--sect-nums');
 var srcArg = arg('--src');
 var clickLayerArg = arg('--click-layer');
+var clickMoreBtnArg = arg('--click-more-btn');
 var doClick = process.argv.indexOf('--click') !== -1;
 
 var opts = {};
@@ -130,6 +142,44 @@ run(jsonPath, opts).then(function (host) {
           };
         });
     }
+
+    // F1 三审：跨层聚合项的 .rn-more-btn / .rn-members 现在是真实节点
+    // （见 report-news.js 的 row() 注释），可以真的在文档树里找、真的点。
+    var moreBtns = inner
+      ? findAll(inner, function (e) { return e.tagName === 'button' && String(e.className || '').indexOf('rn-more-btn') !== -1; })
+      : [];
+    out.moreBtnIdxs = moreBtns.map(function (b) { return b.getAttribute('data-idx'); });
+
+    if (clickMoreBtnArg !== null && body) {
+      var n = parseInt(clickMoreBtnArg, 10);
+      var target = moreBtns[n];
+      // 走 body 的委托监听（跟 production 一样：body.addEventListener('click', ...)
+      // 里靠 e.target.closest('.rn-more-btn') 找回被点的按钮），不是直接点按钮
+      // 自己——按钮自己没有绑监听，监听绑在 body 上，委托这条路径才是真正要
+      // 验证的代码。
+      if (target) body.simulateClick(target);
+    }
+
+    // F1 三审：membersOpen 用**数组**而不是按 data-idx 做 key 的对象——如果
+    // idx 撞车（正是 F1 那个 bug），按 idx 做 key 会让后面的条目静默覆盖
+    // 前面的，反证时反而看不出撞车现场是哪个层被误开了。数组把每条
+    // .rn-members 及其所属层都原样列出，撞车与否、开的是谁一目了然。
+    function findLayerAncestor(el) {
+      var node = el.parentNode;
+      while (node) {
+        if (node.tagName === 'ul' && node.getAttribute && node.getAttribute('data-layer')) {
+          return node.getAttribute('data-layer');
+        }
+        node = node.parentNode;
+      }
+      return null;
+    }
+    out.membersOpen = inner
+      ? findAll(inner, function (e) { return e.tagName === 'ul' && String(e.className || '').indexOf('rn-members') !== -1; })
+        .map(function (ul) {
+          return { idx: ul.getAttribute('data-idx'), layer: findLayerAncestor(ul), open: ul.classList.contains('open') };
+        })
+      : [];
   }
   process.stdout.write(JSON.stringify(out));
 }).catch(function (e) {
