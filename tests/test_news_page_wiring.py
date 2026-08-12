@@ -238,6 +238,29 @@ def test_sector_explanation_does_not_duplicate_generic_fallback():
 
 
 @skip_no_node
+def test_sector_only_notes_are_complete_sentences_no_dangling_punctuation():
+    """★Minor（复审 + 独立核查同时发现，2026-08-12 二次修复）：上一版直接把
+    收尾半句拼成空字符串，前面那句的句中标点（逗号/分号）却留在了原地——
+    「近 30 天无公告披露；」「...暂无法判断窗口内是否有公告，」后面直接接
+    `</p>`，句子看起来说了一半，要靠下一段 sectorNote 才能读通。
+
+    两句是两件事（有没有公告 / 有没有本公司新闻），不该合并成一段，但各自
+    必须独立成句——句号收口，不依赖后面那段来补完。用字符串精确匹配
+    `无公告披露；</p>` / `是否有公告，</p>` 这类悬空标点，直接卡在字符串
+    结尾而不是句子中间。"""
+    empty_out = render(EMPTY_ANNOUNCE_JSON)
+    assert "无公告披露。" in empty_out["html"]
+    assert "无公告披露；</p>" not in empty_out["html"]
+    assert "无公告披露，</p>" not in empty_out["html"]
+
+    error_out = render(EMPTY_ANNOUNCE_JSON,
+                       patch={"announcements_error": True, "announcements_empty": False})
+    assert "是否有公告。" in error_out["html"]
+    assert "是否有公告，</p>" not in error_out["html"]
+    assert "是否有公告；</p>" not in error_out["html"]
+
+
+@skip_no_node
 def test_intro_does_not_hardcode_technical_as_last_layer():
     """★同一处修复：引言曾写死「交易与资金面排在最后」，sector 上线后不再
     成立（11 页里已有多页没有 technical 层，sector 才是实际最后一层）。"""
