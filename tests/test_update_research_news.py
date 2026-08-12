@@ -502,6 +502,129 @@ class TestHkexMalformedRows:
         assert urn.parse_hkex_rows(rows) == []
 
 
+# ── Fix A（2026-08-12 全量审计）：巨潮公告链接未编码空格 ────────────────────
+#
+# ★实测 245 条链接里 70 条（29%）含未编码空格，全部落在 300308/300408/300750
+# 三只创业板股。浏览器导航能自动编码打开，但 curl 直接拒绝
+# （`curl: (3) URL rejected: Malformed input to a URL function`）——不是坏
+# 链，是非浏览器消费者的健壮性问题。
+
+
+class TestCleanUrl:
+    _CNINFO_WITH_SPACE = (
+        "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308"
+        "&announcementId=1225445769&orgId=9900022016"
+        "&announcementTime=2026-07-29 00:00:00")
+
+    def test_space_becomes_percent20_rest_untouched(self):
+        got = urn._clean_url(self._CNINFO_WITH_SPACE)
+
+        assert got == (
+            "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=300308"
+            "&announcementId=1225445769&orgId=9900022016"
+            "&announcementTime=2026-07-29%2000:00:00")
+        # ? & = : / 一个都不能被编码
+        for ch in "?&=:/":
+            assert ch in got
+
+    def test_idempotent_already_encoded_url_unchanged(self):
+        """★幂等性是本修复的核心约束：news-raw.jsonl 用 url 做去重键
+        （见 merge_news_history），二次编码会让同一条新闻改头换面、被误判成
+        新条目反复追加。"""
+        once = urn._clean_url(self._CNINFO_WITH_SPACE)
+        twice = urn._clean_url(once)
+
+        assert twice == once
+        assert "%2520" not in twice  # 双重编码的症状
+
+    def test_normal_eastmoney_url_unchanged(self):
+        u = "http://finance.eastmoney.com/a/202607273822119639.html"
+
+        assert urn._clean_url(u) == u
+
+    def test_hkex_pdf_url_unchanged(self):
+        u = ("https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0804/"
+             "2026080400123.pdf")
+
+        assert urn._clean_url(u) == u
+
+    def test_empty_string_returns_empty_string(self):
+        assert urn._clean_url("") == ""
+
+
+class TestCleanUrlAppliedAtCallSites:
+    """★只测 `_clean_url` 本身不够——必须证明四个采集点（cninfo/em/hkex/yf）
+    各自真的调用了它，否则「某处漏接」这种回归（比如反证 1：删掉某一处
+    `_clean_url(...)` 调用）不会被任何测试抓到，只会在实测/curl 才暴露。"""
+
+    def test_cninfo_url_is_cleaned(self, monkeypatch):
+        import akshare as ak
+        import pandas as pd
+
+        def fake(symbol, market, start_date, end_date):
+            return pd.DataFrame([{
+                "代码": symbol, "简称": "中际旭创", "公告标题": "x",
+                "公告时间": "2026-07-29",
+                "公告链接": ("http://www.cninfo.com.cn/new/disclosure/detail?"
+                            "stockCode=300308&announcementTime=2026-07-29 00:00:00"),
+            }])
+
+        monkeypatch.setattr(ak, "stock_zh_a_disclosure_report_cninfo", fake)
+
+        got = urn.fetch_cninfo_announcements("300308")
+
+        assert " " not in got[0]["url"]
+        assert "2026-07-29%2000:00:00" in got[0]["url"]
+
+    def test_em_news_url_is_cleaned(self, monkeypatch):
+        import akshare as ak
+        import pandas as pd
+
+        def fake(symbol):
+            return pd.DataFrame([{
+                "新闻标题": "x", "发布时间": "2026-08-01",
+                "新闻链接": "http://finance.eastmoney.com/a/2026 08 01x.html",
+                "文章来源": "东方财富",
+            }])
+
+        monkeypatch.setattr(ak, "stock_news_em", fake)
+
+        got = urn.fetch_em_news("300308")
+
+        assert " " not in got[0]["url"]
+
+    def test_hkex_row_url_is_cleaned(self):
+        rows = [{"DATE_TIME": "04/08/2026 16:30", "STOCK_CODE": "02513",
+                 "SHORT_TEXT": "x", "TITLE": "t",
+                 "FILE_LINK": "/listedco/listconews/sehk/2026 0804/a.pdf"}]
+
+        got = urn.parse_hkex_rows(rows)
+
+        assert " " not in got[0]["url"]
+
+    def test_yf_news_url_is_cleaned(self, monkeypatch):
+        import yfinance as yf
+
+        class FakeTicker:
+            def __init__(self, ticker):
+                pass
+
+            @property
+            def news(self):
+                return [{"content": {
+                    "pubDate": "2026-08-01T00:00:00Z",
+                    "title": "t",
+                    "canonicalUrl": {"url": "https://example.com/a b.html"},
+                    "provider": {"displayName": "yahoo"},
+                }}]
+
+        monkeypatch.setattr(yf, "Ticker", FakeTicker)
+
+        got = urn.fetch_yf_news("2513.HK")
+
+        assert " " not in got[0]["url"]
+
+
 # ── 港股：审查 Finding 4 — HTML 实体未反转义 ────────────────────────────────
 #
 # ★实测线上 02513-news.json 落盘了 "&#x2f;"（应为「/」）——目前没有页面消费

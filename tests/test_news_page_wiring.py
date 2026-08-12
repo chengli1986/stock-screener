@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 DOCS = Path.home() / "docs-site"
+_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 CLI = FIXTURES / "render_news_cli.js"
 
@@ -105,6 +106,39 @@ def test_source_mentions_both_announcement_flags():
     assert "announcements_error" in src
 
 
+# ── Fix B（2026-08-12 全量审计）：长江存储（YMTC）页不接 report-news.js ────
+#
+# ★意图：`ymtc-ipo.html` 是 `#research-watchlist` 12 页里唯一没有「相关新闻
+# 与公告」章节的一页——原因是对的（YMTC 尚未上市、没有证券代码，巨潮/东财
+# 都无从查起），不该改采集脚本去凑一个假代码，而是页面应该**明说**这个原因，
+# 不能留白让读者以为页面坏了。
+#
+# 这条测试锁住两件必须同时成立的事：
+#   ① 页面正文里确实有这段解释（不是留白、也没被后续编辑删掉）；
+#   ② `config/research_stocks.json` 确实不含长江存储——这份配置被
+#      snapshot/consensus/peers-market 等多个采集脚本共用，一旦长江存储
+#      被加进去，那些脚本会全都去抓一个不存在的股票代码。
+#
+# 两条断言故意绑在一起：哪天长江存储真的上市、被加进 research_stocks.json，
+# 这条测试会因为②变红——那是**故意的**，逼着回来把①这段「尚未上市」的
+# 说明删掉，不然页面就开始说假话了。反证见 report.md：把②反过来（假装已
+# 入池）单独跑一次，必须真的红。
+def test_ymtc_page_explains_missing_news_section_and_guards_config():
+    html = (DOCS / "pages" / "ymtc-ipo.html").read_text(encoding="utf-8")
+
+    assert 'src="/js/report-news.js"' not in html, (
+        "YMTC 尚未上市、无证券代码，不该接 report-news.js 组件——"
+        "接了会 fetch 一个不存在的 {key}-news.json")
+    assert "尚未上市" in html and "证券代码" in html, (
+        "页面正文里没找到『尚未上市/无证券代码』的说明，读者会以为这页少了一节是 bug")
+
+    stocks = json.loads((_ROOT / "config" / "research_stocks.json").read_text(encoding="utf-8"))
+    names = {s.get("name") for s in stocks}
+    assert "长江存储" not in names, (
+        "research_stocks.json 已经把长江存储加进池子了——回到 pages/ymtc-ipo.html "
+        "把『尚未上市』那段说明删掉，改接 report-news.js")
+
+
 def test_no_inline_onclick_toggle():
     """C1 回归哨兵：本节头部按钮不得再用 `onclick="toggle(this)"` 这种依赖页面
     全局函数的写法——innolight-300308 页全局根本没有 toggle()，点击直接
@@ -162,6 +196,45 @@ def test_no_news_layer_page_does_not_promise_related_news_below():
 
     assert "下方为相关新闻" not in out["html"]
     assert "无公告披露" in out["html"]  # 公告那半句判断不受影响，仍然要在
+
+
+@skip_no_node
+def test_sector_only_page_explains_no_direct_company_news():
+    """★Fix C（2026-08-12 全量审计）：688048 长光华芯真实快照只有 sector 层
+    （见文件头 F4 说明），此前读者点开只看到「下方为其他相关信息」这句含糊
+    话 + 一堆完全没提到长光华芯的板块新闻，会以为页面坏了。新文案必须明说
+    『近 N 天没有直接提到本公司的新闻，下方是板块/市场层面的信息』。"""
+    data = json.loads(EMPTY_ANNOUNCE_JSON.read_text(encoding="utf-8"))
+    assert [g["layer"] for g in data["groups"]] == ["sector"], (
+        "夹具数据前提变了，换一个仍是『只剩 sector 一层』的样例")
+
+    out = render(EMPTY_ANNOUNCE_JSON)
+
+    assert "没有直接提到本公司的新闻" in out["html"]
+    assert "板块" in out["html"] and "市场" in out["html"]
+
+
+@skip_no_node
+def test_sector_explanation_absent_when_news_layer_present():
+    """反面：300308 真实快照有 news 层（见文件头 SAMPLE_JSON），不该出现这句
+    『没有直接提到本公司的新闻』——那会是假话，公司本来就有相关新闻。"""
+    data = json.loads(SAMPLE_JSON.read_text(encoding="utf-8"))
+    assert "news" in [g["layer"] for g in data["groups"]], (
+        "夹具数据前提变了，换一个仍带 news 层的样例")
+
+    out = render(SAMPLE_JSON)
+
+    assert "没有直接提到本公司的新闻" not in out["html"]
+
+
+@skip_no_node
+def test_sector_explanation_does_not_duplicate_generic_fallback():
+    """新句子上线后，紧邻它的『下方为其他相关信息』泛指半句应该让位，
+    不然两句连读会显得啰嗦重复——组合起来必须通顺，不是简单拼接。"""
+    out = render(EMPTY_ANNOUNCE_JSON)
+
+    assert "下方为其他相关信息" not in out["html"]
+    assert "无公告披露" in out["html"]  # 公告那半句判断不受影响
 
 
 @skip_no_node

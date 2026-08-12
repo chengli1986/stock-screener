@@ -19,6 +19,7 @@ import shutil
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 BJT = timezone(timedelta(hours=8))
 REPO = Path(__file__).resolve().parents[1]
@@ -55,6 +56,38 @@ def call_with_timeout(fn, timeout_s: int, label: str = ""):
 
 
 # ── 采集 ─────────────────────────────────────────────────────────────────────
+
+# ★实测（Fix A，2026-08-12 全量审计）：巨潮公告链接把 announcementTime 拼在
+# query string 里、日期和时间之间是个原样未编码的空格——
+#   .../detail?stockCode=300308&...&announcementTime=2026-07-29 00:00:00
+# 浏览器导航会自动编码成 %20、照样能打开，但任何非浏览器消费者（curl / 链接
+# 检查器 / 部分下游客户端）会直接拒绝：`curl: (3) URL rejected: Malformed
+# input to a URL function`。实测 245 条链接里 70 条中招（29%），全部集中在
+# 300308/300408/300750 这三只创业板股——巧合地正是池子里全部 300xxx 标的。
+#
+# safe 字符集覆盖 URL 里本就该保留原样的分隔符（? & = : / 等），只让空格
+# 这类真正的非法字符被编码——`.` `-` `_` `~` 和字母数字本来就是 quote() 的
+# 默认安全字符，不需要显式列出。
+_URL_SAFE_CHARS = "%:/?&=#@+,;~"
+
+
+def _clean_url(u: str) -> str:
+    """百分号编码 URL 里的非法字符（目前已知的唯一肇因：巨潮公告链接里未编码
+    的空格），保持其余部分逐字节不变。
+
+    ★必须幂等，绝不能把已经合法的 URL 二次编码——`%20` 若被当成待编码内容，
+    会变成 `%2520`。做法是把 `%` 本身也放进 safe 集合：quote() 因此完全不碰
+    任何已经存在的 `%XX` 序列（那本就是字母/数字，quote() 默认就不编码），
+    只有裸露的非法字符（如空格）才会被转成 `%XX`。
+
+    ``{key}-news-raw.jsonl`` 用 url 做去重键（见 `merge_news_history`）：
+    实测现存 119 条历史新闻 url 里 0 条含空格，所以这次改动不会让存量记录
+    变形；但若这里破了幂等性，将来任何一次改动都可能让同一条新闻因为 url
+    变了形而被误判成新条目，反复追加。
+    """
+    if not u:
+        return u
+    return quote(u, safe=_URL_SAFE_CHARS)
 
 
 def fetch_cninfo_announcements(code: str, days: int = WINDOW_DAYS) -> list[dict]:
@@ -106,7 +139,7 @@ def fetch_cninfo_announcements(code: str, days: int = WINDOW_DAYS) -> list[dict]
     return [{"kind": "announcement",
              "title": str(r["公告标题"]).strip(),
              "date": str(r["公告时间"])[:10],
-             "url": str(r["公告链接"]).strip(),
+             "url": _clean_url(str(r["公告链接"]).strip()),
              "category": None}
             for _, r in df.iterrows()]
 
@@ -124,7 +157,7 @@ def fetch_em_news(code: str) -> list[dict]:
     return [{"kind": "news",
              "title": str(r["新闻标题"]).strip(),
              "date": str(r["发布时间"])[:10],
-             "url": str(r["新闻链接"]).strip(),
+             "url": _clean_url(str(r["新闻链接"]).strip()),
              "source": str(r.get("文章来源") or "").strip()}
             for _, r in df.iterrows()]
 
@@ -168,7 +201,7 @@ def parse_hkex_rows(rows: list[dict]) -> list[dict]:
             "kind": "announcement",
             "title": str(r.get("TITLE") or "").strip(),
             "date": d,
-            "url": (_HKEX_BASE + link) if link.startswith("/") else link,
+            "url": _clean_url((_HKEX_BASE + link) if link.startswith("/") else link),
             "category": category,
         })
     if dropped:
@@ -233,8 +266,8 @@ def fetch_yf_news(ticker: str) -> list[dict]:
         out.append({"kind": "news",
                     "title": str(c.get("title") or "").strip(),
                     "date": pub,
-                    "url": str((c.get("canonicalUrl") or {}).get("url")
-                               or c.get("link") or "").strip(),
+                    "url": _clean_url(str((c.get("canonicalUrl") or {}).get("url")
+                                          or c.get("link") or "").strip()),
                     "source": str((c.get("provider") or {}).get("displayName") or "")})
     return out
 
