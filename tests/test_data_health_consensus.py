@@ -169,5 +169,8 @@ class TestCollectWiresBothChecks:
         # 2026-08-08 新增 check_history_keeps_up 后，「健康」的定义也包含历史跟得上
         (tmp_path / "300308-consensus-history.jsonl").write_text(
             json.dumps({"as_of": "2026-08-03", "years": {}}) + "\n", encoding="utf-8")
+        # 2026-08-13 新增 news 检查后，「健康」的定义也包含 news.json 新鲜且未报错
+        _write(tmp_path, "300308-news.json",
+               {"as_of": "2026-08-07", "announcements_error": False})
 
         assert rdh.collect_stale(TODAY) == []

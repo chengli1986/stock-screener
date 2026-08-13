@@ -11,6 +11,8 @@ research_data_health.py — 研报数据新鲜度健康检查（防静默失败�
   - 每个 research_stocks.json 注册股票：
       {key}-snapshot.json   as_of      > SNAPSHOT_MAX_DAYS  → stale（工作日刷新，留长周末余量）
       {key}-financials.json updated_at > FINANCIALS_MAX_DAYS → stale（每月 1 日刷新）
+      {key}-news.json       as_of      > NEWS_MAX_DAYS       → stale（每天刷新，见下方常量注释）
+      {key}-news.json       announcements_error == true      → 单独一类告警（见 check_news_announcements_error）
   - 每个 research_peers.json 注册代码：
       {code}-peers-market.json as_of    > PEERS_MAX_DAYS     → stale
   文件缺失 / 时间字段无法解析也算 stale。
@@ -36,6 +38,9 @@ SNAPSHOT_MAX_DAYS = 4     # 工作日刷新；4 天容忍长周末，持续失�
 FINANCIALS_MAX_DAYS = 40  # 每月 1 日刷新
 PEERS_MAX_DAYS = 4
 CONSENSUS_MAX_DAYS = 40   # 每月 1 日刷新，与 financials 同频同阈值
+# research-news cron 每天跑（不是工作日，不需要像 SNAPSHOT_MAX_DAYS 那样容长周末）；
+# 3 天 = 容一次漏跑，还留一天余量再报警，不会跑丢一次就当天炸告警。
+NEWS_MAX_DAYS = 3
 
 
 def _load_env() -> dict:
@@ -134,6 +139,44 @@ def check_consensus_source(stocks: list, data_dir: pathlib.Path, today: date) ->
     return out
 
 
+def check_news_announcements_error(stocks: list, data_dir: pathlib.Path) -> list:
+    """`{key}-news.json` 的 `announcements_error=true` → 本次公告抓取失败，公告层未知。
+
+    ★这是与 as_of 陈旧检查（check_file）成因不同的另一类失败，故意分开报、
+    分开写告警文案，不合并成一条——否则以后自己都分不清是哪种：
+
+    - `announcements_error=true` 时，若磁盘上已有旧文件，`write_and_deploy()`
+      会**拒绝覆盖**（update_research_news.py 的刻意保护，不是 bug），`as_of`
+      因此停在旧值上不动 → 这只股票很可能**同时**触发 as_of 陈旧检查和这里，
+      这是预期的，不是重复告警。
+    - 只触发 as_of 陈旧、不触发这里 = 采集大概率根本没跑（cron 没执行 /
+      整个脚本挂了），news.json 连尝试写一份 error 标记的新文件都没发生。
+    - 只触发这里、不触发 as_of = 首次采集就失败（没有旧文件可保护），写了一份
+      带 error 标记的新文件，`as_of` 是今天，as_of 检查逮不到，只能靠这里报。
+
+    文件缺失 / JSON 解析失败已由 check_file 报，这里不重复。
+    """
+    out = []
+    for s in stocks:
+        key = s.get("snapshot_key") or s.get("symbol")
+        path = data_dir / f"{key}-news.json"
+        if not path.exists():
+            continue
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue      # JSON 坏了同样由 check_file 报，不重复
+        if d.get("announcements_error"):
+            out.append({
+                "file": path.name,
+                "issue": ("公告本次抓取失败（announcements_error=true）——公告层未知，"
+                          "不是「无公告」。若同一只股票的 as_of 也报陈旧，说明旧文件被"
+                          "保护未覆盖（采集持续失败）；若 as_of 仍新鲜，说明是首次采集"
+                          "失败。两种都请检查 research-news cron"),
+            })
+    return out
+
+
 MISSED_RUNS_TOLERANCE = 1   # 容忍一次跳过（单次网络抖动），第二次才算异常
 
 
@@ -228,6 +271,9 @@ def collect_stale(today: date) -> list:
         for r in (
             check_file(DOCS_DATA_DIR / f"{key}-snapshot.json", "as_of", SNAPSHOT_MAX_DAYS, today),
             check_file(DOCS_DATA_DIR / f"{key}-financials.json", "updated_at", FINANCIALS_MAX_DAYS, today),
+            # news 之前完全没被监控：cron 行被误删/整脚本挂了都是静默失败，
+            # 页面 as_of 一天天变旧而无人知晓，页面上也不会有任何提示。
+            check_file(DOCS_DATA_DIR / f"{key}-news.json", "as_of", NEWS_MAX_DAYS, today),
             # consensus 是估值分母的来源却一直没被监控：整月 cron 失败时 snapshot 照常
             # 每日刷新（分子是新的），分母停在上个月，三类检查全部显示「新鲜」。
             check_file(DOCS_DATA_DIR / f"{key}-consensus.json", "fetched_at", CONSENSUS_MAX_DAYS, today),
@@ -239,6 +285,7 @@ def collect_stale(today: date) -> list:
             if r:
                 stale.append(r)
     stale.extend(check_consensus_source(stocks, DOCS_DATA_DIR, today))
+    stale.extend(check_news_announcements_error(stocks, DOCS_DATA_DIR))
     if PEERS_FILE.exists():
         peers_cfg = json.loads(PEERS_FILE.read_text())
         for code in peers_cfg:
@@ -273,6 +320,7 @@ def build_html(stale: list, today: date) -> str:
         "<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #333'>问题</th></tr>"
         f"{rows}</table>"
         f"<p style='color:#888;font-size:12px'>阈值：snapshot/peers-market &gt; {SNAPSHOT_MAX_DAYS} 天，"
+        f"news &gt; {NEWS_MAX_DAYS} 天，"
         f"financials &gt; {FINANCIALS_MAX_DAYS} 天。由 research-data-health cron 每日检查。</p>"
         "</body></html>"
     )

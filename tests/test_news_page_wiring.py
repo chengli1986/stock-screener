@@ -20,6 +20,7 @@ HTML 字符串**和**真实的 click 行为**，不是源码文本。原来的�
 import json
 import shutil
 import subprocess
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -543,3 +544,51 @@ def test_no_hardcoded_yellow_hex_left():
 
     assert "#f59e0b" not in src
     assert "var(--yellow)" in src
+
+
+# ── Fix ②（2026-08-13）：as_of 陈旧时页面要明说 ─────────────────────────────
+#
+# ★洞：research_data_health.py（stock-screener 侧）现在会为 as_of 陈旧发告警
+# 邮件，但那是给运维看的——读者打开研报页看不到告警邮件，页面上此前没有任何
+# 东西告诉他「这段数据已经旧了」。这三条测试直接跑 render_news_cli.js（真实
+# node vm 执行 report-news.js），不是源码文本断言，理由同本文件头部教训。
+#
+# ★这台 EC2 系统时区是 UTC（非 BJT），下面用 date.today() 算出的日期字符串
+# 和 report-news.js 里 `new Date('YYYY-MM-DD')` 的 UTC-午夜解析对齐，所以
+# 用 date.today() - timedelta(days=N) 拼出来的 as_of，无论测试跑在一天里的
+# 什么时刻，算出来的 ageDays 都精确等于 N（报告页面源码里那段注释详细写了
+# 这个近似为什么在阈值取 3 天时是安全的）。
+
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).strftime("%Y-%m-%d")
+
+
+@skip_no_node
+def test_stale_as_of_shows_note_with_correct_day_count():
+    out = render(SAMPLE_JSON, patch={"as_of": _days_ago(10)})
+
+    assert "本节数据已 10 天未更新" in out["html"]
+    assert "17:00" in out["html"]  # 说清楚正常刷新频率的预期，不是只报天数
+
+
+@skip_no_node
+def test_fresh_as_of_today_shows_no_stale_note():
+    out = render(SAMPLE_JSON, patch={"as_of": _days_ago(0)})
+
+    assert "天未更新" not in out["html"]
+
+
+@skip_no_node
+def test_stale_note_coexists_with_sector_only_note_without_duplication():
+    """688048 长光华芯快照本身就是 sector-only（见文件头 F4 说明）；再叠加一个
+    陈旧的 as_of，两段说明都要出现在同一次渲染里，且陈旧提示不重复。"""
+    data = json.loads(EMPTY_ANNOUNCE_JSON.read_text(encoding="utf-8"))
+    assert [g["layer"] for g in data["groups"]] == ["sector"], (
+        "夹具数据前提变了，换一个仍是『只剩 sector 一层』的样例")
+
+    out = render(EMPTY_ANNOUNCE_JSON, patch={"as_of": _days_ago(10)})
+
+    assert "本节数据已 10 天未更新" in out["html"]
+    assert out["html"].count("天未更新") == 1
+    assert "没有直接提到本公司的新闻" in out["html"]
+    assert "无公告披露" in out["html"]
