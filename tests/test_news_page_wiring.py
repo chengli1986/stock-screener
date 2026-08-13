@@ -592,3 +592,58 @@ def test_stale_note_coexists_with_sector_only_note_without_duplication():
     assert out["html"].count("天未更新") == 1
     assert "没有直接提到本公司的新闻" in out["html"]
     assert "无公告披露" in out["html"]
+
+
+# ── Minor 2（2026-08-13 复审）：as_of 缺失/空串/null 不能静默当成新鲜 ──────
+#
+# ★`new Date(undefined)` / `new Date('')` 都是 Invalid Date（NaN），
+# `NaN >= 3` 恒为 false——如果不特殊处理，陈旧提示分支会被静默跳过，读者
+# 连「不知道这段数据多旧」都不知道，是比「陈旧但没提示」更危险的失败方向。
+# `null` 更隐蔽：`new Date(null)` 等价于 `new Date(0)`（1970-01-01），不是
+# NaN，会算出「已 20678 天未更新」这种荒谬数字——三种输入要分别覆盖，不能
+# 只测其中一种就当作覆盖了整类问题。
+#
+# 审查者确认这条路径在当前采集脚本（update_research_news.py 的
+# build_payload()，as_of 永远由 datetime.now(BJT).strftime() 写出）下不
+# 可达，这里仍然测，是防御性代码「宁可多说一句也不要静默放过」的立场——
+# 跟 Python 侧 research_data_health.py 的 check_file() 对缺失/非法字段
+# 同样判 stale、不默认放行一致。
+
+@skip_no_node
+def test_missing_as_of_key_shows_unknown_note_not_silently_fresh(tmp_path):
+    """★undefined 分支：payload 里压根没有 as_of 字段（比空串更彻底的缺失
+    形态）。render_news_cli.js 的 `--patch` 走 `Object.assign(data, patch)`，
+    只能覆盖已有字段、不能删除字段，测『整个字段都不存在』必须换一份不含
+    该字段的独立夹具，不能靠 patch SAMPLE_JSON 做到。"""
+    payload = {
+        "symbol": "TEST", "name": "测试", "window_days": 30,
+        "groups": [], "announcements_empty": False,
+        "announcements_error": False, "is_empty": False,
+    }
+    p = tmp_path / "test-news.json"
+    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    out = render(p)
+
+    assert "无法判断是否新鲜" in out["html"]
+    assert "天未更新" not in out["html"]
+    assert "20678" not in out["html"]
+
+
+@skip_no_node
+def test_empty_string_as_of_shows_unknown_note():
+    out = render(SAMPLE_JSON, patch={"as_of": ""})
+
+    assert "无法判断是否新鲜" in out["html"]
+    assert "天未更新" not in out["html"]
+
+
+@skip_no_node
+def test_null_as_of_does_not_render_absurd_day_count():
+    """★这条是三种里最隐蔽的一种：new Date(null) 不是 NaN，是 1970-01-01，
+    修之前会渲染出『已 20678 天未更新』这种荒谬数字。"""
+    out = render(SAMPLE_JSON, patch={"as_of": None})
+
+    assert "20678" not in out["html"]
+    assert "无法判断是否新鲜" in out["html"]
+    assert "天未更新" not in out["html"]
