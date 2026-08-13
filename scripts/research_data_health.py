@@ -166,6 +166,8 @@ def check_news_announcements_error(stocks: list, data_dir: pathlib.Path) -> list
             d = json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue      # JSON 坏了同样由 check_file 报，不重复
+        if not isinstance(d, dict):
+            continue
         if d.get("announcements_error"):
             out.append({
                 "file": path.name,
