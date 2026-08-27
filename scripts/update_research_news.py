@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -28,6 +29,14 @@ DATA_DIR = REPO.parent / "docs-site" / "data"
 DEPLOY_DATA_DIR = Path("/var/www/overview/data")
 WINDOW_DAYS = 30
 EMPTY_RESULT_PROBE_DAYS = 365
+PROBE_RETRY_DELAY_S = 2
+
+# 扩窗自检遇到这些异常＝**瞬时**故障（非 JSON 响应/限流网关页、硬超时、连接层
+# 错误），重试一次再定性。⚠KeyError 刻意不在此列：扩窗 KeyError 才是 schema
+# 真变了的信号，重试无意义，把它当瞬时错误会重犯「静默报 0 条」那条 Critical。
+# `json.JSONDecodeError` 同时覆盖 requests 的同名子类；`OSError` 覆盖
+# `requests.exceptions.RequestException`（继承自 IOError）与 ConnectionError。
+_TRANSIENT_PROBE_ERRORS = (json.JSONDecodeError, TimeoutError, OSError)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from news_rules import LAYER_LABEL, LAYER_ORDER, classify, group_events  # noqa: E402
@@ -105,6 +114,12 @@ def fetch_cninfo_announcements(code: str, days: int = WINDOW_DAYS) -> list[dict]
     - 扩窗**也抛异常** → 是真的故障，原样把窄窗那个 `KeyError` 抛出，交给
       上层置 `None` 哨兵
 
+    ★2026-08-26 生产告警补强：扩窗自检本身是「多打一次请求」的判据，第二发
+    被上游限流（巨潮返回非 JSON → `JSONDecodeError`）就会把真·0 条误判成真实
+    故障，产生假告警且当日该股公告不更新。所以**网络类**异常重试一次
+    （`_TRANSIENT_PROBE_ERRORS`），两发都失败才定性；扩窗 KeyError 仍然立刻
+    定性，不重试。
+
     ⚠不要图省事把「捕获 KeyError」直接当「0 条」——那样一旦 akshare 真的
     改了 schema（不是空结果这个已知怪癖），会静默报告 0 条，页面又开始说
     假话，等于把这条 Critical 换个方向再犯一次。扩窗只在 KeyError 时才多
@@ -124,13 +139,25 @@ def fetch_cninfo_announcements(code: str, days: int = WINDOW_DAYS) -> list[dict]
     except KeyError as e:
         print(f"WARN: [{code}] cninfo 近{days}天空结果触发 akshare KeyError"
               f"（{e}），扩窗到 {EMPTY_RESULT_PROBE_DAYS} 天自检...", file=sys.stderr)
-        try:
-            call_with_timeout(lambda: _query(EMPTY_RESULT_PROBE_DAYS), 60,
-                              label=f"cninfo-probe[{code}]")
-        except Exception as probe_err:  # noqa: BLE001
-            print(f"WARN: [{code}] 扩窗自检也失败（{type(probe_err).__name__}: "
-                  f"{probe_err}），判定为真实故障，原样抛出", file=sys.stderr)
-            raise e from probe_err
+        for attempt in (1, 2):
+            try:
+                call_with_timeout(lambda: _query(EMPTY_RESULT_PROBE_DAYS), 60,
+                                  label=f"cninfo-probe[{code}]")
+                break
+            except _TRANSIENT_PROBE_ERRORS as probe_err:
+                if attempt == 2:
+                    print(f"WARN: [{code}] 扩窗自检两发都失败"
+                          f"（{type(probe_err).__name__}: {probe_err}），"
+                          f"判定为真实故障，原样抛出", file=sys.stderr)
+                    raise e from probe_err
+                print(f"WARN: [{code}] 扩窗自检遇瞬时故障"
+                      f"（{type(probe_err).__name__}: {probe_err}），"
+                      f"{PROBE_RETRY_DELAY_S}s 后重试一次", file=sys.stderr)
+                time.sleep(PROBE_RETRY_DELAY_S)
+            except Exception as probe_err:  # noqa: BLE001
+                print(f"WARN: [{code}] 扩窗自检也失败（{type(probe_err).__name__}: "
+                      f"{probe_err}），判定为真实故障，原样抛出", file=sys.stderr)
+                raise e from probe_err
         print(f"[{code}] 扩窗自检成功，确认近{days}天真·0条公告", file=sys.stderr)
         return []
 

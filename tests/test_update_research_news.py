@@ -357,6 +357,100 @@ class TestCninfoEmptyResultVsBrokenFetch:
         assert len(calls) == 1  # 没有触发扩窗自检
 
 
+# ── 扩窗自检遇到瞬时网络故障要重试（2026-08-26 生产告警）─────────────────
+#
+# ★实测（不是推测）：8-26 17:00 BJT 的 research-news cron exit=1，688825 长鑫
+# 科技窄窗 KeyError（该股前几日同样路径、每次扩窗自检都判定真·0 条），但这
+# 一次扩窗那一发被巨潮打回了**非 JSON**（`JSONDecodeError: Expecting value:
+# line 1 column 1`）。扩窗自检是「多打一次请求」的判据，第二发被限流就会把
+# 真·0 条误判成真实故障 → 假告警 + 当日该股公告不更新。
+#
+# 修法只针对**网络类**异常重试一次；扩窗抛 KeyError 仍然立刻判真实故障——
+# 那才是 schema 真变了的信号，重试无意义，放宽它会重犯「静默报 0 条」。
+
+
+class TestProbeRetriesOnTransientError:
+    @staticmethod
+    def _empty_df():
+        import pandas as pd
+        return pd.DataFrame(columns=["代码", "简称", "公告标题", "公告时间", "公告链接"])
+
+    @staticmethod
+    def _narrow_keyerror():
+        return KeyError(
+            "None of [Index(['代码','简称','公告标题','公告时间',"
+            "'announcementId','orgId'], dtype='str')] are in the [columns]")
+
+    def _install(self, monkeypatch, probe_errors):
+        """窄窗恒 KeyError；扩窗按 probe_errors 依次抛，抛完则返回空 df。"""
+        import akshare as ak
+
+        monkeypatch.setattr(urn, "PROBE_RETRY_DELAY_S", 0, raising=False)
+        calls = []
+        queue = list(probe_errors)
+
+        def fake(symbol, market, start_date, end_date):
+            calls.append((start_date, end_date))
+            if len(calls) == 1:
+                raise self._narrow_keyerror()
+            if queue:
+                raise queue.pop(0)
+            return self._empty_df()
+
+        monkeypatch.setattr(ak, "stock_zh_a_disclosure_report_cninfo", fake)
+        return calls
+
+    def test_probe_json_decode_error_retries_once_then_confirms_empty(self, monkeypatch):
+        """扩窗第一发返回非 JSON、第二发成功 → 真·0 条，不再假告警。"""
+        calls = self._install(
+            monkeypatch,
+            [json.JSONDecodeError("Expecting value", "", 0)])
+
+        got = urn.fetch_cninfo_announcements("688825")
+
+        assert got == []
+        assert len(calls) == 3  # 窄窗一次 + 扩窗两次（首发 + 重试）
+
+    def test_probe_timeout_retries_once_then_confirms_empty(self, monkeypatch):
+        """硬超时同属瞬时故障，也要重试一次。"""
+        calls = self._install(
+            monkeypatch, [TimeoutError("cninfo-probe[688825] exceeded 60s")])
+
+        got = urn.fetch_cninfo_announcements("688825")
+
+        assert got == []
+        assert len(calls) == 3
+
+    def test_probe_transient_twice_raises_narrow_keyerror(self, monkeypatch):
+        """两发都被打回 → 判真实故障，原样抛窄窗 KeyError（上层置哨兵）。"""
+        calls = self._install(
+            monkeypatch,
+            [json.JSONDecodeError("Expecting value", "", 0),
+             json.JSONDecodeError("Expecting value", "", 0)])
+
+        try:
+            urn.fetch_cninfo_announcements("688825")
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("两发都失败时应抛 KeyError，而不是静默返回 []")
+
+        assert len(calls) == 3  # 只重试一次，不无限重试
+
+    def test_probe_keyerror_does_not_retry(self, monkeypatch):
+        """★扩窗 KeyError = schema 真变了，立刻判真实故障，绝不重试。"""
+        calls = self._install(monkeypatch, [KeyError("schema 真的变了")])
+
+        try:
+            urn.fetch_cninfo_announcements("688825")
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("扩窗 KeyError 应抛出")
+
+        assert len(calls) == 2  # 窄窗一次 + 扩窗一次，没有第三次
+
+
 # ── 历史文件里的坏行不该拖垮整只股票（审查 Finding 2）───────────────────────
 
 
