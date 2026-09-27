@@ -183,28 +183,28 @@ class TestEmptyState:
 
 class TestNewsHistory:
     def test_first_run_writes_all(self, tmp_path):
-        got = urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path)
+        got = urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path, now=NOW)
 
         assert len(got) == 1
         assert (tmp_path / "300308-news-raw.jsonl").exists()
 
     def test_rerun_does_not_duplicate(self, tmp_path):
         """★东财每天返回同一批最新 10 条，不去重会迅速堆成垃圾。"""
-        urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path)
-        got = urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path)
+        urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path, now=NOW)
+        got = urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path, now=NOW)
 
         assert len(got) == 1
 
     def test_accumulates_across_runs(self, tmp_path):
         """★这是攒历史的全部目的：接口固定 10 条，盛科 10 条只覆盖 4 天，
         直接读拼不出一个月。"""
-        urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path)
-        got = urn.merge_news_history("300308", [news("B", "2026-08-02")], tmp_path)
+        urn.merge_news_history("300308", [news("A", "2026-08-01")], tmp_path, now=NOW)
+        got = urn.merge_news_history("300308", [news("B", "2026-08-02")], tmp_path, now=NOW)
 
         assert len(got) == 2
 
     def test_returns_only_recent_window(self, tmp_path):
-        urn.merge_news_history("300308", [news("旧闻", "2026-05-01")], tmp_path)
+        urn.merge_news_history("300308", [news("旧闻", "2026-05-01")], tmp_path, now=NOW)
         got = urn.merge_news_history("300308", [news("新闻", "2026-08-10")], tmp_path,
                                      now=NOW, days=30)
 
@@ -212,7 +212,7 @@ class TestNewsHistory:
 
     def test_old_rows_stay_on_disk(self, tmp_path):
         """窗口只影响返回值，不该删磁盘上的历史。"""
-        urn.merge_news_history("300308", [news("旧闻", "2026-05-01")], tmp_path)
+        urn.merge_news_history("300308", [news("旧闻", "2026-05-01")], tmp_path, now=NOW)
         urn.merge_news_history("300308", [news("新闻", "2026-08-10")], tmp_path, now=NOW)
 
         rows = (tmp_path / "300308-news-raw.jsonl").read_text().strip().splitlines()
