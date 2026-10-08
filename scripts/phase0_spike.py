@@ -5,9 +5,9 @@ Phase 0 Data Spike — answers: what data can we get, what can't we get, why, ho
 Pipeline (run in order):
   1. Universe  → artifacts/phase0/universe.csv       (§A 8-field schema)
   2. OHLCV     → artifacts/phase0/ohlcv.csv          (Longbridge kline)
-  3. Fundamentals → artifacts/phase0/fundamentals.jsonl  (East Money push2delay, §B tri-state)
-     (2026-06-03: push2 → push2delay — push2 overseas edges return 502 for this
-      EC2 since 2026-06-02; push2delay serves identical fields and is not blocked)
+  3. Fundamentals → artifacts/phase0/fundamentals.jsonl  (Tencent qt.gtimg.cn, §B tri-state)
+     (2026-06-03: push2 → push2delay; 2026-10-08: push2delay → Tencent qt —
+      both East Money hosts return 502 to this EC2. Tencent = valuation only.)
   4. Report    → artifacts/phase0/report.json + coverage_report.md + timing.csv
 
 Usage:
@@ -82,27 +82,10 @@ DRY_RUN_SYMBOLS = [
 
 BJT = timezone(timedelta(hours=8))
 
-# East Money push2 field mapping (battle-tested in fetch_stock_data.py)
-# A-share secid prefix: 1 = SSE, 0 = SZSE
-# HK secid prefix: 116
-EM_FIELDS = "f116,f162,f163,f167,f173,f183,f184,f185,f186,f187"
-
-# push2delay 单次请求偶发 15s 超时（2026-07-05/07-08/07-13 canary 三次复现，
+# 基本面请求偶发 15s 超时（push2delay 时期 2026-07-05/07-08/07-13 canary 三次复现，
 # 事后手动重放均 <2s 恢复 → 上游瞬时挂起非代码 bug）。2 次重试 + 2s/5s 退避，
 # 只覆盖网络层瞬时错误（超时/连接失败），HTTP 4xx 等逻辑错误不重试。
 FUND_RETRY_BACKOFFS = [2, 5]
-EM_FIELD_MAP = {
-    "f116": "market_cap",       # 总市值 (元)
-    "f162": "_pe_static_raw",   # PE静态 ÷100
-    "f163": "_pe_dynamic_raw",  # PE动态 ÷100
-    "f167": "_pb_raw",          # PB ÷100
-    "f173": "roe_ttm",          # ROE % (already %)
-    "f183": "_revenue_raw",     # 营收TTM (元, for cross-check only)
-    "f184": "revenue_growth",   # 营收同比 %
-    "f185": "net_profit_growth", # 净利同比 %
-    "f186": "gross_margin",     # 毛利率 %
-    "f187": "net_margin_ttm",   # 净利率 %
-}
 
 # HK fields known to return 0.0 (not null) when data is unavailable
 # These are classified as missing_expected for HK, NOT fetch_error (§B)
@@ -114,6 +97,11 @@ HK_MISSING_EXPECTED_FIELDS = {"revenue_growth", "net_margin_ttm", "gross_margin"
 # gross_margin: financial sector (banks/insurance/brokers) has no gross margin concept
 # — East Money returns null/0 for these, not a data error
 A_SHARE_STRUCTURAL_MISSING = {"gross_margin"}
+
+# Tencent qt (fundamentals source since 2026-10-08) carries no profitability /
+# growth fields — reported as missing_expected, not fetch_error.
+TENCENT_UNSOURCED_FIELDS = {"roe_ttm", "revenue_growth", "net_profit_growth",
+                            "net_margin_ttm", "gross_margin"}
 
 # Fundamentals fields in canonical order (frozen per §I)
 FUNDAMENTALS_FIELDS = [
@@ -176,18 +164,6 @@ def normalize_a_share(raw_code: str, exchange: str = "") -> tuple[str, str]:
         else:
             suffix = "SZ"
     return code, f"{code}.{suffix}"
-
-
-def em_secid(symbol_norm: str) -> str:
-    """Convert symbol_norm to East Money secid format."""
-    if symbol_norm.endswith(".HK"):
-        code = symbol_norm[:-3].zfill(5)
-        return f"116.{code}"
-    if symbol_norm.endswith(".SH"):
-        return f"1.{symbol_norm[:-3]}"
-    if symbol_norm.endswith(".SZ"):
-        return f"0.{symbol_norm[:-3]}"
-    raise ValueError(f"Unknown symbol format: {symbol_norm}")
 
 
 # ── output helpers ────────────────────────────────────────────────────────────
@@ -464,32 +440,43 @@ def run_ohlcv(universe: list[dict], force: bool, workers: int) -> list[dict]:
 
 # ── step 3: fundamentals fetching ─────────────────────────────────────────────
 
+def tencent_symbol(symbol_norm: str) -> str:
+    """Convert symbol_norm to Tencent qt.gtimg.cn code (sh600519 / sz000858 / hk00700)."""
+    if symbol_norm.endswith(".HK"):
+        return "hk" + symbol_norm[:-3].zfill(5)
+    if symbol_norm.endswith(".SH"):
+        return "sh" + symbol_norm[:-3]
+    if symbol_norm.endswith(".SZ"):
+        return "sz" + symbol_norm[:-3]
+    raise ValueError(f"Unknown symbol format: {symbol_norm}")
+
+
+def _tencent_float(fields: list[str], idx: int) -> float | None:
+    try:
+        v = float(fields[idx])
+    except (IndexError, ValueError):
+        return None
+    return v or None
+
+
 def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
     """
-    Fetch fundamentals via East Money push2delay. Returns fundamentals record.
+    Fetch fundamentals via Tencent qt.gtimg.cn. Returns fundamentals record.
     Uses §B tri-state: available / missing_expected / fetch_error.
 
-    Host is push2delay.eastmoney.com (NOT push2): push2 overseas edges return
-    502 for this EC2 since 2026-06-02. push2delay serves byte-identical
-    fundamentals fields (verified against real push2 via domestic IP) — the
-    "delay" only affects realtime price, irrelevant for quarterly fundamentals.
+    2026-10-08: push2delay.eastmoney.com → Tencent qt. push2delay started
+    returning HTTP 502 to this EC2 on 2026-09-25 (same shape as push2 on
+    2026-06-02), canary fundamentals 0-11/15 for two weeks. Tencent qt only
+    carries valuation fields: pe_ttm / market_cap (A+HK) and pb (A only —
+    HK pb index not verified). ROE / growth / margins are NOT sourced here and
+    are reported as missing_expected (TENCENT_UNSOURCED_FIELDS). Canary use
+    only; revisit the source before relying on these fields for screening.
 
-    NOTE (Phase 0/1 diagnostic-precision tradeoff): when the API returns
-    0.0 for a field that should have a value, this is classified the same
-    as a failed API call — both map to fetch_error (or missing_expected for
-    known-absent HK fields). A null return and a failed API call are NOT the
-    same thing, but the counts don't yet justify a second state. A future phase
-    splitting these (e.g. fetch_error_null vs fetch_error_api) should find this
-    comment and treat it as the branching point.
+    Tencent field indices (verified 2026-10-08 against 600519/000858/0700/3690):
+      [39] PE(TTM)   [45] 总市值(亿)   [46] PB (A-share only)
     """
     t0 = time.monotonic()
-    secid = em_secid(symbol_norm)
-    url = "https://push2delay.eastmoney.com/api/qt/stock/get"
-    params = {
-        "secid": secid,
-        "fields": EM_FIELDS,
-        "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-    }
+    url = f"https://qt.gtimg.cn/q={tencent_symbol(symbol_norm)}"
 
     base = {
         "symbol_norm": symbol_norm,
@@ -503,7 +490,7 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
     try:
         for attempt in range(len(FUND_RETRY_BACKOFFS) + 1):
             try:
-                r = requests.get(url, params=params, timeout=15,
+                r = requests.get(url, timeout=15,
                                  headers={"User-Agent": "Mozilla/5.0"})
                 break
             except (requests.Timeout, requests.exceptions.ConnectionError):
@@ -524,26 +511,20 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
             base["error_msg"] = f"HTTP {r.status_code}"
             return base
 
-        data = r.json().get("data")
-        if not data:
+        text = r.content.decode("gbk", errors="replace")
+        parts = text.split('"')
+        fields = parts[1].split("~") if len(parts) >= 3 else []
+        if len(fields) < 47:
             base["error_type"] = "empty_response"
-            base["error_msg"] = "data field null/missing"
+            base["error_msg"] = f"unexpected payload: {text[:80]!r}"
             return base
 
-        # Extract raw values
-        raw_pe_s = data.get("f162") or 0
-        raw_pe_d = data.get("f163") or 0
-        raw_pb = data.get("f167") or 0
-
-        pe_ttm = round(raw_pe_s / 100, 2) if raw_pe_s else (
-            round(raw_pe_d / 100, 2) if raw_pe_d else None)
-        pb = round(raw_pb / 100, 2) if raw_pb else None
-        market_cap = data.get("f116") or None
-        roe_ttm = data.get("f173") or None
-        revenue_growth = data.get("f184") or None
-        net_profit_growth = data.get("f185") or None
-        gross_margin = data.get("f186") or None
-        net_margin_ttm = data.get("f187") or None
+        pe_ttm = _tencent_float(fields, 39)
+        cap_yi = _tencent_float(fields, 45)
+        market_cap = cap_yi * 1e8 if cap_yi else None
+        pb = _tencent_float(fields, 46) if market == "a" else None
+        roe_ttm = revenue_growth = net_profit_growth = None
+        gross_margin = net_margin_ttm = None
 
         def field_status(field_name: str, value) -> str:
             """
@@ -555,6 +536,9 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
             """
             if value is not None and value != 0:
                 return "available"
+            if field_name in TENCENT_UNSOURCED_FIELDS or (
+                    market == "hk" and field_name == "pb"):
+                return "missing_expected"
             if market == "hk" and field_name in HK_MISSING_EXPECTED_FIELDS:
                 return "missing_expected"
             if market == "a" and field_name in A_SHARE_STRUCTURAL_MISSING:
@@ -592,7 +576,7 @@ def fetch_fundamentals_one(symbol_norm: str, market: str) -> dict:
 
 
 def run_fundamentals(universe: list[dict], force: bool) -> list[dict]:
-    """Run fundamentals phase sequentially (East Money rate-limit sensitive)."""
+    """Run fundamentals phase sequentially (upstream rate-limit sensitive)."""
     done = set() if force else _load_done_symbols(FUNDAMENTALS_JSONL)
     todo = [r for r in universe if r["symbol_norm"] not in done]
     if not todo:
