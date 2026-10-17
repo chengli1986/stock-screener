@@ -2,6 +2,10 @@
 # commit_research_data.sh — commit + push research data files that a research-* cron
 # just refreshed in the docs-site repo. Invoked by the research cron lines after their
 # Python data-writer succeeds (chained with &&, so a failed refresh is never committed).
+# Exception — research-news (2026-10-17): it also commits on exit 1, because that writer
+# guards per stock (a failed fetch keeps the existing file), so exit 1 means "some stocks
+# failed", not "bad data written"; with && one flaky stock blocked every other stock's
+# commit. Signal exits (rc > 1, e.g. timeout kill) still skip the commit.
 #
 # Multi-session safe: stages ONLY the pathspec(s) passed in (never `git add -A` or a
 # wholesale `git add data/`), so it won't sweep up a concurrent session's WIP edits to
