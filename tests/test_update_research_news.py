@@ -734,3 +734,68 @@ class TestHkexHtmlEntities:
         got = urn.parse_hkex_rows(rows)
 
         assert got[0]["category"] == "公告及通告 - [配售 / 根據一般性授權發行股份]"
+
+
+# ── 告警明细（CRON_ALERT_SUMMARY）──────────────────────────────────────────────
+# 2026-10-17：research-news 告警邮件只有 `exit code 1`，要翻日志才知道哪只股票
+# 失败。cron-wrapper 导出 CRON_ALERT_SUMMARY=<文件>，失败时这里写明细，邮件带出来。
+
+
+class TestAlertSummary:
+    _STOCKS = [
+        {"symbol": "688702", "name": "盛科通信", "news_aliases": []},
+        {"symbol": "02513", "snapshot_key": "02513", "name": "智谱", "exchange": "HK",
+         "hkex_stock_id": "1", "news_aliases": []},
+        {"symbol": "300750", "name": "宁德时代", "news_aliases": []},
+    ]
+
+    def _run(self, tmp_path, monkeypatch, summary_env=True):
+        cfg = tmp_path / "stocks.json"
+        cfg.write_text(json.dumps(self._STOCKS, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(urn, "CONFIG", cfg)
+        monkeypatch.setattr(urn, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(urn, "DEPLOY_DATA_DIR", None)
+
+        def cninfo(symbol):
+            if symbol == "688702":
+                raise ValueError("Expecting value")
+            return []
+
+        def hkex(_sid):
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(urn, "fetch_cninfo_announcements", cninfo)
+        monkeypatch.setattr(urn, "fetch_hkex_announcements", hkex)
+        monkeypatch.setattr(urn, "fetch_em_news", lambda s: [])
+        monkeypatch.setattr(urn, "fetch_yf_news", lambda t: [])
+        summary = tmp_path / "summary"
+        summary.write_text("", encoding="utf-8")
+        if summary_env:
+            monkeypatch.setenv("CRON_ALERT_SUMMARY", str(summary))
+        else:
+            monkeypatch.delenv("CRON_ALERT_SUMMARY", raising=False)
+        return urn.main(), summary
+
+    def test_failures_written_with_code_name_and_layer(self, tmp_path, monkeypatch):
+        rc, summary = self._run(tmp_path, monkeypatch)
+        assert rc == 1
+        assert summary.read_text(encoding="utf-8").splitlines() == [
+            "688702 盛科通信  公告：ValueError",
+            "02513 智谱（港股）  公告：TimeoutError",
+        ]
+
+    def test_successful_stock_not_listed(self, tmp_path, monkeypatch):
+        _, summary = self._run(tmp_path, monkeypatch)
+        assert "300750" not in summary.read_text(encoding="utf-8")
+
+    def test_no_env_var_still_exits_1_without_crash(self, tmp_path, monkeypatch):
+        rc, summary = self._run(tmp_path, monkeypatch, summary_env=False)
+        assert rc == 1
+        assert summary.read_text(encoding="utf-8") == ""
+
+    def test_unwritable_summary_path_keeps_exit_1(self, tmp_path, monkeypatch, capsys):
+        # 写不进去只 WARN：告警明细是锦上添花，不能把 exit 1 改成别的、更不能崩
+        rc, _ = self._run(tmp_path, monkeypatch)
+        monkeypatch.setenv("CRON_ALERT_SUMMARY", str(tmp_path / "no" / "such" / "file"))
+        assert urn.main() == 1
+        assert "告警明细写入失败" in capsys.readouterr().err

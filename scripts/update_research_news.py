@@ -448,13 +448,36 @@ def write_and_deploy(key: str, payload: dict, data_dir: Path,
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
+def write_alert_summary(errors: list[str], labels: dict[str, str]) -> None:
+    """把失败明细写进 cron-wrapper 提供的 `$CRON_ALERT_SUMMARY`，告警邮件带出来。
+
+    errors 的元素是 `key:层:异常名`（整只失败时是 `key:异常名`）；每项写一行
+    `代码 名称  层：异常名`。没有这个环境变量（手动运行）就什么都不做；
+    写不进去只打 WARN——告警明细是锦上添花，不能改变退出码。
+    """
+    path = os.environ.get("CRON_ALERT_SUMMARY")
+    if not path or not errors:
+        return
+    lines = []
+    for msg in errors:
+        key, _, detail = msg.partition(":")
+        lines.append(f"{key} {labels.get(key, '')}  {detail.replace(':', '：')}")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"WARN: 告警明细写入失败 {path}: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def main() -> int:
     stocks = json.loads(CONFIG.read_text(encoding="utf-8"))
     errors = []
+    labels: dict[str, str] = {}
     for s in stocks:
         key = s.get("snapshot_key") or s["symbol"]
         name = s.get("name")
         is_hk = s.get("exchange") == "HK"
+        labels[key] = f"{name}（港股）" if is_hk else f"{name}"
         # ★整只股票包一层 try/except：一只失败不该拖垮其余——实测过历史
         # jsonl 里一行合法 JSON 但非 dict（如裸数字 123）会让 `.get()` 抛
         # AttributeError，若不隔离，后面的股票全部不处理。
@@ -523,6 +546,7 @@ def main() -> int:
         print(f"\n=== FAILED ({len(errors)}) ===", file=sys.stderr)
         for msg in errors:
             print(f"  {msg}", file=sys.stderr)
+        write_alert_summary(errors, labels)
         return 1
     return 0
 
