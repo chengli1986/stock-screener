@@ -438,8 +438,19 @@ def write_and_deploy(key: str, payload: dict, data_dir: Path,
         reason = "本次无内容" if payload.get("is_empty") else "公告抓取失败"
         print(f"  [{key}] {reason}，保留既有文件（不覆盖）")
         return None
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8")
+    # ★原子写（2026-10-17）：cron 现在 exit 1 也提交，写到一半出错的半截文件
+    #   会被提交进 git，所以同 news-raw.jsonl 一样「写临时文件 + os.replace()」。
+    #   符号链接先解析到真实路径，否则 os.replace 会把链接换成普通文件。
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
+    tmp = path.parent / f"{path.name}.tmp{os.getpid()}"
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     if deploy_dir and Path(deploy_dir).is_dir():
         shutil.copy2(path, Path(deploy_dir) / path.name)
     return path

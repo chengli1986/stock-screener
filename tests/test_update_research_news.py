@@ -799,3 +799,60 @@ class TestAlertSummary:
         monkeypatch.setenv("CRON_ALERT_SUMMARY", str(tmp_path / "no" / "such" / "file"))
         assert urn.main() == 1
         assert "告警明细写入失败" in capsys.readouterr().err
+
+
+# ── `-news.json` 原子写 ────────────────────────────────────────────────────────
+# 2026-10-17 自查：research-news cron 现在 exit 1 也提交（一只股票失败不能卡住
+# 其余股票）。若写到一半出错（磁盘满 / IO 错误），异常会被单只股票的 try 接住
+# → exit 1 → 半截文件被提交；该股公告持续失败时「保留既有文件」还会一直留着它。
+
+
+class TestNewsJsonAtomicWrite:
+    _GOOD = {"groups": [{"layer": "major", "items": [{"title": "昨天的好数据"}]}]}
+    _NEW = {"is_empty": False, "groups": [{"layer": "major", "items": [{"title": "新" * 500}]}]}
+
+    def _half_write_then_fail(self, monkeypatch):
+        real = Path.write_text
+
+        def broken(self, data, *a, **kw):
+            real(self, data[: len(data) // 2], *a, **kw)
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(Path, "write_text", broken)
+
+    def test_failed_write_keeps_previous_file_intact(self, tmp_path, monkeypatch):
+        target = tmp_path / "300308-news.json"
+        target.write_text(json.dumps(self._GOOD, ensure_ascii=False), encoding="utf-8")
+        self._half_write_then_fail(monkeypatch)
+
+        try:
+            urn.write_and_deploy("300308", self._NEW, tmp_path, None)
+        except OSError:
+            pass
+
+        assert json.loads(target.read_text(encoding="utf-8")) == self._GOOD
+
+    def test_failed_write_raises_and_leaves_no_temp_file(self, tmp_path, monkeypatch):
+        self._half_write_then_fail(monkeypatch)
+        try:
+            urn.write_and_deploy("300308", self._NEW, tmp_path, None)
+            raised = False
+        except OSError:
+            raised = True
+        # 必须抛出：main() 靠它把这只股票记进 errors（→ exit 1 + 告警明细）
+        assert raised
+        assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+    def test_symlink_target_updated_and_link_preserved(self, tmp_path):
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        real_file = real_dir / "300308-news.json"
+        real_file.write_text("{}", encoding="utf-8")
+        link_dir = tmp_path / "data"
+        link_dir.mkdir()
+        (link_dir / "300308-news.json").symlink_to(real_file)
+
+        urn.write_and_deploy("300308", self._NEW, link_dir, None)
+
+        assert (link_dir / "300308-news.json").is_symlink()
+        assert json.loads(real_file.read_text(encoding="utf-8")) == self._NEW
