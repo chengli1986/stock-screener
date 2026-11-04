@@ -106,7 +106,9 @@ def test_shareholder_fetch_keeps_holder_count_when_top10_unavailable(monkeypatch
     def _boom(*a, **kw):
         raise KeyError("None of [Index([...])] are in the [columns]")
 
-    monkeypatch.setattr(urf, "_get_with_retry", lambda *a, **kw: resp, raising=False)
+    # fetch_shareholders 直接调 requests.get。旧写法 patch 不存在的 _get_with_retry 并带
+    # raising=False，替身静默落空，测试一直在打真实东财接口，户数变了才暴露（2026-11-04）。
+    monkeypatch.setattr(urf.requests, "get", lambda *a, **kw: resp)
     monkeypatch.setattr(urf.ak, "stock_circulate_stock_holder", _boom)
 
     out = urf.fetch_shareholders("688825", "SH")
