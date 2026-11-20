@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import conftest  # noqa: F401  -- sets RESEARCH_DEPLOY_DATA_DIR even under --noconftest
+
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_DEFAULT = "/var/www/overview/data"
 ENV = "RESEARCH_DEPLOY_DATA_DIR"
@@ -59,6 +61,13 @@ def _is_env_get(call) -> bool:
             and isinstance(call.args[0], ast.Constant) and call.args[0].value == ENV)
 
 
+def _is_path_ctor(f) -> bool:
+    """Path(...) or pathlib.Path(...), nothing else."""
+    return ((isinstance(f, ast.Name) and f.id == "Path")
+            or (isinstance(f, ast.Attribute) and f.attr == "Path"
+                and isinstance(f.value, ast.Name) and f.value.id == "pathlib"))
+
+
 @pytest.mark.parametrize("path", SCRIPTS, ids=lambda p: p.stem)
 def test_cron_default_is_still_the_live_dir(path):
     # Read, not run: each DEPLOY_DATA* must be exactly
@@ -70,7 +79,8 @@ def test_cron_default_is_still_the_live_dir(path):
                 and isinstance(node.targets[0], ast.Name)
                 and node.targets[0].id.startswith("DEPLOY_DATA")):
             v = node.value
-            ok = (isinstance(v, ast.Call) and len(v.args) == 1 and not v.keywords
+            ok = (isinstance(v, ast.Call) and _is_path_ctor(v.func)
+                  and len(v.args) == 1 and not v.keywords
                   and _is_env_get(v.args[0]) and v.args[0].args[1].value == LIVE_DEFAULT)
             found.append((node.targets[0].id, ok))
     assert found and all(ok for _, ok in found), found
