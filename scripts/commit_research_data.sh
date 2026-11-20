@@ -9,8 +9,11 @@
 #
 # Multi-session safe: stages ONLY the pathspec(s) passed in (never `git add -A` or a
 # wholesale `git add data/`), so it won't sweep up a concurrent session's WIP edits to
-# other data files. Push is best-effort with a single rebase-retry; a persistent push
-# failure leaves a local commit for the next run/session and never fails the cron.
+# other data files, and commits ONLY the files staged under those pathspecs: a bare
+# `git commit` would also commit whatever another session had staged in ~/docs-site
+# (found by the 2026-11-21 docs-site writers audit). The file list, not the globs, is
+# handed to `git commit`, so a pathspec that matches nothing cannot fail the commit.
+# Push is best-effort with a single rebase-retry; a persistent push failure leaves a local commit for the next run/session and never fails the cron.
 #
 # Usage: commit_research_data.sh <pathspec> [<pathspec> ...]
 #   e.g. commit_research_data.sh 'data/*-snapshot.json'
@@ -22,17 +25,22 @@ cd "$REPO"
 
 [ "$#" -ge 1 ] || { echo "[commit-research-data] no pathspec given, skip"; exit 0; }
 
-# Stage only the requested pathspec globs (git expands them as pathspecs).
-git add -- "$@" 2>/dev/null || true
+# Stage only the requested pathspec globs (git expands them as pathspecs), one at a
+# time: given several, `git add` stages NOTHING if any one of them matches no file,
+# and with the error discarded that run's data would silently go uncommitted.
+for spec in "$@"; do
+  git add -- "$spec" 2>/dev/null || true
+done
 
-if git diff --cached --quiet; then
+mapfile -t STAGED < <(git diff --cached --name-only -- "$@")
+if [ "${#STAGED[@]}" -eq 0 ]; then
   echo "[commit-research-data] no changes staged for [$*], nothing to commit"
   exit 0
 fi
 
 DATE="$(TZ=Asia/Shanghai date '+%Y-%m-%d')"
 if ! git commit -q -m "chore(data): research data refresh ${DATE} (auto via cron)" \
-       -m "Auto-committed by commit_research_data.sh for pathspec(s): $*"; then
+       -m "Auto-committed by commit_research_data.sh for pathspec(s): $*" -- "${STAGED[@]}"; then
   echo "[commit-research-data] git commit failed"
   exit 1
 fi
