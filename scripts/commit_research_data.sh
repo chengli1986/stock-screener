@@ -25,21 +25,52 @@ cd "$REPO"
 
 [ "$#" -ge 1 ] || { echo "[commit-research-data] no pathspec given, skip"; exit 0; }
 
-# Stage only the requested pathspec globs (git expands them as pathspecs), one at a
-# time: given several, `git add` stages NOTHING if any one of them matches no file,
-# and with the error discarded that run's data would silently go uncommitted.
+# Only plain positive globs are supported (all 7 research-* crons pass those). A magic
+# pathspec (":(exclude)...", ":(literal)...") would change meaning once staged one at a
+# time below, so it is refused before the index is touched.
 for spec in "$@"; do
-  git add -- "$spec" 2>/dev/null || true
+  case "$spec" in
+    :*) echo "[commit-research-data] ERROR: magic pathspec not supported: [$spec]"; exit 1 ;;
+  esac
 done
 
-mapfile -t STAGED < <(git diff --cached --name-only -- "$@")
+# Stage the pathspecs one at a time: given several, `git add` stages NOTHING if any one
+# matches no file. A pathspec that matches no file (tracked, deleted-but-tracked or
+# untracked) is skipped and said so; any other git failure (e.g. index.lock) stops the
+# run before anything is committed.
+for spec in "$@"; do
+  if ! matches="$(git ls-files --cached --others --exclude-standard -- "$spec")"; then
+    echo "[commit-research-data] ERROR: git ls-files failed for [$spec]"; exit 1
+  fi
+  if [ -z "$matches" ]; then
+    echo "[commit-research-data] no file matches [$spec], skipped"
+    continue
+  fi
+  if ! git add -- "$spec"; then
+    echo "[commit-research-data] ERROR: git add failed for [$spec]"; exit 1
+  fi
+done
+
+# Commit ONLY the files staged under our pathspecs -- not the whole index, which may
+# hold another session's staged work. --no-renames lists a rename's deleted old path
+# as well as the new one; -z keeps every byte of a file name; --literal-pathspecs makes
+# git take each listed name as a name, not a pattern.
+# Known limit (left to the docs-autosync work): files under OUR globs that another
+# session changed in the shared ~/docs-site checkout are still committed with ours;
+# telling them apart needs a cron-only worktree and a list of files the refresh wrote.
+STAGED_LIST="$(mktemp)"
+trap 'rm -f "$STAGED_LIST"' EXIT
+if ! git diff --cached --name-only --no-renames -z -- "$@" > "$STAGED_LIST"; then
+  echo "[commit-research-data] ERROR: git diff failed for [$*]"; exit 1
+fi
+mapfile -d '' -t STAGED < "$STAGED_LIST"
 if [ "${#STAGED[@]}" -eq 0 ]; then
   echo "[commit-research-data] no changes staged for [$*], nothing to commit"
   exit 0
 fi
 
 DATE="$(TZ=Asia/Shanghai date '+%Y-%m-%d')"
-if ! git commit -q -m "chore(data): research data refresh ${DATE} (auto via cron)" \
+if ! git --literal-pathspecs commit -q -m "chore(data): research data refresh ${DATE} (auto via cron)" \
        -m "Auto-committed by commit_research_data.sh for pathspec(s): $*" -- "${STAGED[@]}"; then
   echo "[commit-research-data] git commit failed"
   exit 1
