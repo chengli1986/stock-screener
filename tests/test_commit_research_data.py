@@ -17,15 +17,20 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "commit_research_data.sh"
 
 
+def _clean_env():
+    """No GIT_* from the caller (GIT_INDEX_FILE, GIT_DIR ...) may point git at a real repo."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
-                          text=True).stdout
+                          text=True, env=_clean_env()).stdout
 
 
 def _names(cwd, *args):
     """File names from a git listing command, NUL-separated so no name is split."""
     out = subprocess.run(["git", *args, "-z"], cwd=cwd, check=True,
-                         capture_output=True).stdout.decode()
+                         capture_output=True, env=_clean_env()).stdout.decode()
     return sorted(n for n in out.split("\0") if n)
 
 
@@ -54,7 +59,7 @@ def _setup(tmp_path):
 
 
 def _run(home, *pathspecs):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = _clean_env()
     env["HOME"] = str(home)
     return subprocess.run(["bash", str(SCRIPT), *pathspecs], env=env,
                           capture_output=True, text=True)

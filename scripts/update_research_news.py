@@ -26,7 +26,9 @@ BJT = timezone(timedelta(hours=8))
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config" / "research_stocks.json"
 DATA_DIR = REPO.parent / "docs-site" / "data"
-DEPLOY_DATA_DIR = Path("/var/www/overview/data")
+# Live site data dir. Tests point RESEARCH_DEPLOY_DATA_DIR at a temp dir (tests/conftest.py)
+# so no test run can copy fixture data over the live files (2026-11-20 incident).
+DEPLOY_DATA_DIR = Path(os.environ.get("RESEARCH_DEPLOY_DATA_DIR", "/var/www/overview/data"))
 WINDOW_DAYS = 30
 EMPTY_RESULT_PROBE_DAYS = 365
 PROBE_RETRY_DELAY_S = 2

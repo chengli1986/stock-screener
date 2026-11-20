@@ -12,6 +12,7 @@ update_research_peers_market.py — 刷新个股研报 §6 同业横向对比表
 任意 peer 抓取失败仅记 WARN（保留该 peer 静态值），整体非空即 exit 0；
 全部失败 exit 1（由 cron-wrapper 告警）。
 """
+import os
 import json
 import math
 import sys
@@ -25,7 +26,9 @@ BJT = timezone(timedelta(hours=8))
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config" / "research_peers.json"
 DATA_DIR = REPO.parent / "docs-site" / "data"
-DEPLOY_DATA_DIR = Path("/var/www/overview/data")
+# Live site data dir. Tests point RESEARCH_DEPLOY_DATA_DIR at a temp dir (tests/conftest.py)
+# so no test run can copy fixture data over the live files (2026-11-20 incident).
+DEPLOY_DATA_DIR = Path(os.environ.get("RESEARCH_DEPLOY_DATA_DIR", "/var/www/overview/data"))
 
 _QT_URL = "https://qt.gtimg.cn/q={code}"
 _KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
