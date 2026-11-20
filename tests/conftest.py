@@ -12,6 +12,7 @@
 落在被 patch 的 `DATA_DIR` 里，与生产完全一致。
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -20,21 +21,36 @@ from pathlib import Path
 
 # Before any test module imports a scripts/update_research_* module: send their
 # live-site copies to a throwaway dir. See tests/test_no_live_site_writes.py.
-_PROTECTED = (Path("/var/www").resolve(), (Path.home() / "docs-site").resolve())
-_DEPLOY_TMP = Path(tempfile.mkdtemp(prefix="research-deploy-")).resolve()
-if any(p == _DEPLOY_TMP or p in _DEPLOY_TMP.parents for p in _PROTECTED):
-    shutil.rmtree(_DEPLOY_TMP, ignore_errors=True)
-    raise RuntimeError(f"test deploy dir {_DEPLOY_TMP} is inside a protected tree; fix TMPDIR")
-_PREVIOUS_DEPLOY_ENV = os.environ.get("RESEARCH_DEPLOY_DATA_DIR")
-os.environ["RESEARCH_DEPLOY_DATA_DIR"] = str(_DEPLOY_TMP)
+# The temp ROOT is checked before anything is created in it, and cleanup is an
+# atexit hook so it also runs when this file is imported as a plain module
+# (pytest --noconftest + `from conftest import ...`).
+_PROTECTED = tuple({Path("/var/www").resolve(), Path("/var/www/overview").resolve(),
+                    (Path.home() / "docs-site").resolve()})
 
 
-def pytest_unconfigure(config):
-    shutil.rmtree(_DEPLOY_TMP, ignore_errors=True)
-    if _PREVIOUS_DEPLOY_ENV is None:
-        os.environ.pop("RESEARCH_DEPLOY_DATA_DIR", None)
-    else:
-        os.environ["RESEARCH_DEPLOY_DATA_DIR"] = _PREVIOUS_DEPLOY_ENV
+def _inside_protected(path: Path) -> bool:
+    path = path.resolve()
+    return any(p == path or p in path.parents for p in _PROTECTED)
+
+
+if os.environ.get("_RESEARCH_DEPLOY_TMP_OWNER") != str(os.getpid()):
+    _root = Path(tempfile.gettempdir())
+    if _inside_protected(_root):
+        raise RuntimeError(f"temp root {_root} is inside a protected tree; fix TMPDIR")
+    _DEPLOY_TMP = Path(tempfile.mkdtemp(prefix="research-deploy-", dir=_root)).resolve()
+    _PREVIOUS_DEPLOY_ENV = os.environ.get("RESEARCH_DEPLOY_DATA_DIR")
+    os.environ["RESEARCH_DEPLOY_DATA_DIR"] = str(_DEPLOY_TMP)
+    os.environ["_RESEARCH_DEPLOY_TMP_OWNER"] = str(os.getpid())
+
+    def _cleanup(tmp=_DEPLOY_TMP, prev=_PREVIOUS_DEPLOY_ENV):
+        shutil.rmtree(tmp, ignore_errors=True)
+        if prev is None:
+            os.environ.pop("RESEARCH_DEPLOY_DATA_DIR", None)
+        else:
+            os.environ["RESEARCH_DEPLOY_DATA_DIR"] = prev
+        os.environ.pop("_RESEARCH_DEPLOY_TMP_OWNER", None)
+
+    atexit.register(_cleanup)
 
 
 def write_auto_consensus(data_dir, key: str, estimates: dict) -> None:

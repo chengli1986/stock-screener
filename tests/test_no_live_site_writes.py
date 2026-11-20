@@ -12,8 +12,6 @@ conftest points it at a verified temp dir before any test module is imported.
 import ast
 import importlib.util
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -49,25 +47,33 @@ def test_deploy_dir_is_the_session_temp_dir(path):
         assert d.resolve() == root, f"{path.name} would write to {d}"
 
 
-def test_cron_default_is_still_the_live_dir():
-    # A child with the variable removed must see the live path, as cron does.
-    code = (
-        "import importlib.util, sys, pathlib\n"
-        "out = []\n"
-        "for p in sys.argv[1:]:\n"
-        "    s = importlib.util.spec_from_file_location('m', p)\n"
-        "    m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-        "    out += [str(v) for k, v in vars(m).items()\n"
-        "            if k.startswith('DEPLOY_DATA') and isinstance(v, pathlib.Path)]\n"
-        "print('\\n'.join(out))\n"
-    )
-    env = {k: v for k, v in os.environ.items() if k != ENV}
-    r = subprocess.run([sys.executable, "-c", code, *map(str, SCRIPTS)], env=env,
-                       capture_output=True, text=True, timeout=120)
-    assert r.returncode == 0, r.stderr
-    lines = r.stdout.split()
-    assert len(lines) == len(SCRIPTS)
-    assert set(lines) == {LIVE_DEFAULT}
+def _is_env_get(call) -> bool:
+    """True for exactly os.environ.get(ENV, <default>)."""
+    if not isinstance(call, ast.Call):
+        return False
+    f = call.func
+    return (isinstance(f, ast.Attribute) and f.attr == "get"
+            and isinstance(f.value, ast.Attribute) and f.value.attr == "environ"
+            and isinstance(f.value.value, ast.Name) and f.value.value.id == "os"
+            and len(call.args) == 2 and not call.keywords
+            and isinstance(call.args[0], ast.Constant) and call.args[0].value == ENV)
+
+
+@pytest.mark.parametrize("path", SCRIPTS, ids=lambda p: p.stem)
+def test_cron_default_is_still_the_live_dir(path):
+    # Read, not run: each DEPLOY_DATA* must be exactly
+    # Path(os.environ.get(ENV, "/var/www/overview/data")) at module level.
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found = []
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id.startswith("DEPLOY_DATA")):
+            v = node.value
+            ok = (isinstance(v, ast.Call) and len(v.args) == 1 and not v.keywords
+                  and _is_env_get(v.args[0]) and v.args[0].args[1].value == LIVE_DEFAULT)
+            found.append((node.targets[0].id, ok))
+    assert found and all(ok for _, ok in found), found
 
 
 def _docstring_nodes(tree):
@@ -81,12 +87,7 @@ def _docstring_nodes(tree):
 
 
 def _env_default_nodes(tree):
-    ids = set()
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and len(node.args) == 2
-                and isinstance(node.args[0], ast.Constant) and node.args[0].value == ENV):
-            ids.add(id(node.args[1]))
-    return ids
+    return {id(n.args[1]) for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_env_get(n)}
 
 
 def test_no_script_names_the_live_site_outside_the_env_default():
