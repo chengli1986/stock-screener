@@ -14,11 +14,27 @@
 
 import json
 import os
+import shutil
 import tempfile
+from pathlib import Path
 
 # Before any test module imports a scripts/update_research_* module: send their
 # live-site copies to a throwaway dir. See tests/test_no_live_site_writes.py.
-os.environ["RESEARCH_DEPLOY_DATA_DIR"] = tempfile.mkdtemp(prefix="research-deploy-")
+_PROTECTED = (Path("/var/www").resolve(), (Path.home() / "docs-site").resolve())
+_DEPLOY_TMP = Path(tempfile.mkdtemp(prefix="research-deploy-")).resolve()
+if any(p == _DEPLOY_TMP or p in _DEPLOY_TMP.parents for p in _PROTECTED):
+    shutil.rmtree(_DEPLOY_TMP, ignore_errors=True)
+    raise RuntimeError(f"test deploy dir {_DEPLOY_TMP} is inside a protected tree; fix TMPDIR")
+_PREVIOUS_DEPLOY_ENV = os.environ.get("RESEARCH_DEPLOY_DATA_DIR")
+os.environ["RESEARCH_DEPLOY_DATA_DIR"] = str(_DEPLOY_TMP)
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_DEPLOY_TMP, ignore_errors=True)
+    if _PREVIOUS_DEPLOY_ENV is None:
+        os.environ.pop("RESEARCH_DEPLOY_DATA_DIR", None)
+    else:
+        os.environ["RESEARCH_DEPLOY_DATA_DIR"] = _PREVIOUS_DEPLOY_ENV
 
 
 def write_auto_consensus(data_dir, key: str, estimates: dict) -> None:

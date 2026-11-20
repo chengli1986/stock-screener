@@ -36,6 +36,7 @@ snapshot 每交易日刷新且已在抓 A 股行情，同一次跑里取 H 股�
 """
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -165,12 +166,31 @@ class TestWiredIntoSnapshot:
         from conftest import write_auto_consensus
         write_auto_consensus(tmp_path, stock["snapshot_key"],
                              self._CONSENSUS[stock["snapshot_key"]])
+        # Both lists of closes are fixed and the deploy dir is a temp dir: until
+        # 2026-11-21 this helper fetched real closes from Tencent and copied the
+        # resulting ah-history over the LIVE site file (fx 0.86 is this test's value).
+        deploy = tmp_path / "deploy"
+        deploy.mkdir(exist_ok=True)
         with mock.patch.object(urs, "fetch_quote_data", return_value=self._QUOTE), \
              mock.patch.object(urs, "fetch_ohlcv_data", return_value=self._OHLCV), \
              mock.patch.object(urs, "fetch_h_quote", return_value=h_quote), \
              mock.patch.object(urs, "fetch_fx_rate", return_value=fx), \
-             mock.patch.object(urs, "DATA_DIR", tmp_path):
+             mock.patch.object(urs, "fetch_closes", side_effect=self._closes), \
+             mock.patch.object(urs, "DATA_DIR", tmp_path), \
+             mock.patch.object(urs, "DEPLOY_DATA_DIR", deploy):
             return urs.build_snapshot(stock)
+
+    @staticmethod
+    def _closes(code, days=None):
+        base = 900.0 if not code.startswith("hk") else 1100.0
+        return {f"2026-10-{d:02d}": base + d for d in range(1, 29)}
+
+    def test_ah_history_goes_to_the_temp_dirs_only(self, tmp_path):
+        self._build(self._STOCK_AH, tmp_path)
+        repo_copy = tmp_path / "300308-ah-history.json"
+        deploy_copy = tmp_path / "deploy" / "300308-ah-history.json"
+        assert repo_copy.is_file() and deploy_copy.is_file()
+        assert json.loads(deploy_copy.read_text(encoding="utf-8"))["fx_used"] == 0.86
 
     def test_ah_block_present_for_dual_listed(self, tmp_path):
         snap = self._build(self._STOCK_AH, tmp_path)
