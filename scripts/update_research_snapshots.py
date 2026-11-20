@@ -79,7 +79,9 @@ CONFIG_FILE = REPO_DIR / "config" / "research_stocks.json"
 
 DOCS_SITE_DIR = pathlib.Path(os.path.expanduser("~/docs-site"))
 DATA_DIR = DOCS_SITE_DIR / "data"
-DEPLOY_DATA_DIR = pathlib.Path("/var/www/overview/data")
+# Live site data dir. Tests point RESEARCH_DEPLOY_DATA_DIR at a temp dir (tests/conftest.py)
+# so no test run can copy fixture data over the live files (2026-11-20 incident).
+DEPLOY_DATA_DIR = pathlib.Path(os.environ.get("RESEARCH_DEPLOY_DATA_DIR", "/var/www/overview/data"))
 
 BJT = timezone(timedelta(hours=8))
 

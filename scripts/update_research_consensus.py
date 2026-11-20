@@ -20,6 +20,7 @@ update_research_consensus.py — 一致预期(估值分母)自动刷新
 只落到独立文件供复核。确认无误后再由人工同步注册表。
 """
 
+import os
 import argparse
 import json
 import pathlib
@@ -41,7 +42,9 @@ from _horizon import horizon_years  # noqa: E402
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY = REPO_ROOT / "config" / "research_stocks.json"
 DOCS_DATA = pathlib.Path.home() / "docs-site" / "data"
-DEPLOY_DATA = pathlib.Path("/var/www/overview/data")
+# Live site data dir. Tests point RESEARCH_DEPLOY_DATA_DIR at a temp dir (tests/conftest.py)
+# so no test run can copy fixture data over the live files (2026-11-20 incident).
+DEPLOY_DATA = pathlib.Path(os.environ.get("RESEARCH_DEPLOY_DATA_DIR", "/var/www/overview/data"))
 
 # 显著变动门槛:超过即在输出里标记并使脚本以告警码退出
 DEFAULT_THRESHOLD_PCT = 10.0

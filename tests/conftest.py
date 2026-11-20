@@ -13,6 +13,12 @@
 """
 
 import json
+import os
+import tempfile
+
+# Before any test module imports a scripts/update_research_* module: send their
+# live-site copies to a throwaway dir. See tests/test_no_live_site_writes.py.
+os.environ["RESEARCH_DEPLOY_DATA_DIR"] = tempfile.mkdtemp(prefix="research-deploy-")
 
 
 def write_auto_consensus(data_dir, key: str, estimates: dict) -> None:
